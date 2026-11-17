@@ -1,0 +1,7 @@
+numpy>=1.24
+Pillow>=10.0
+
+# optional tooling
+# cairosvg>=2.7      # dataset.py: rasterise SVG originals
+#                    # verify.py: render any engine's SVG fairly
+# vtracer==1.0.0a4   # compare.py: head-to-head against VTracer

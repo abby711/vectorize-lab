@@ -1,0 +1,114 @@
+{
+  "10-flat-scene.png": {
+    "anchors": 47,
+    "paths": 7,
+    "primitives": 4,
+    "shapes": 11,
+    "source": "10-flat-scene.svg",
+    "width": 480
+  },
+  "11-brand-mark.png": {
+    "anchors": 30,
+    "paths": 3,
+    "primitives": 3,
+    "shapes": 6,
+    "source": "11-brand-mark.svg",
+    "width": 480
+  },
+  "12-badge.png": {
+    "anchors": 48,
+    "paths": 1,
+    "primitives": 9,
+    "shapes": 10,
+    "source": "12-badge.svg",
+    "width": 480
+  },
+  "13-mosaic.png": {
+    "anchors": 27,
+    "paths": 0,
+    "primitives": 8,
+    "shapes": 8,
+    "source": "13-mosaic.svg",
+    "width": 480
+  },
+  "14-blobs.png": {
+    "anchors": 16,
+    "paths": 3,
+    "primitives": 1,
+    "shapes": 4,
+    "source": "14-blobs.svg",
+    "width": 480
+  },
+  "15-plant.png": {
+    "anchors": 24,
+    "paths": 4,
+    "primitives": 3,
+    "shapes": 7,
+    "source": "15-plant.svg",
+    "width": 480
+  },
+  "16-weather.png": {
+    "anchors": 60,
+    "paths": 4,
+    "primitives": 10,
+    "shapes": 14,
+    "source": "16-weather.svg",
+    "width": 480
+  },
+  "20-city-night.png": {
+    "anchors": 1016,
+    "paths": 0,
+    "primitives": 254,
+    "shapes": 254,
+    "source": "20-city-night.svg",
+    "width": 640
+  },
+  "21-confetti.png": {
+    "anchors": 226,
+    "paths": 0,
+    "primitives": 61,
+    "shapes": 61,
+    "source": "21-confetti.svg",
+    "width": 480
+  },
+  "22-icon-grid.png": {
+    "anchors": 248,
+    "paths": 4,
+    "primitives": 61,
+    "shapes": 65,
+    "source": "22-icon-grid.svg",
+    "width": 640
+  },
+  "23-gradient-sky.png": {
+    "anchors": 22,
+    "paths": 2,
+    "primitives": 3,
+    "shapes": 5,
+    "source": "23-gradient-sky.svg",
+    "width": 480
+  },
+  "24-line-art.png": {
+    "anchors": 29,
+    "paths": 5,
+    "primitives": 2,
+    "shapes": 7,
+    "source": "24-line-art.svg",
+    "width": 480
+  },
+  "25-scene-tiny.png": {
+    "anchors": 47,
+    "paths": 7,
+    "primitives": 4,
+    "shapes": 11,
+    "source": "25-scene-tiny.svg",
+    "width": 160
+  },
+  "26-badge-large.png": {
+    "anchors": 48,
+    "paths": 1,
+    "primitives": 9,
+    "shapes": 10,
+    "source": "26-badge-large.svg",
+    "width": 1440
+  }
+}

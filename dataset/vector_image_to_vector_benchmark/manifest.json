@@ -1,0 +1,111 @@
+{
+  "name": "Image-to-Vector ground-truth SVG starter set",
+  "note": "Original SVGs from Wikimedia Commons. Download at runtime; no binaries are bundled because this environment could not reach Wikimedia's file host.",
+  "assets": [
+    {
+      "filename": "mandala_drawing_01.svg",
+      "title": "Mandala drawing 01",
+      "author": "Nevit Dilmen",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Mandala_drawing_01.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Mandala_drawing_01.svg",
+      "dimensions": "479 x 480",
+      "reported_size": "23 KB",
+      "license": "CC BY-SA 4.0 (also offered under GFDL)",
+      "tests": [
+        "radial symmetry",
+        "fine paths",
+        "enclosed regions"
+      ]
+    },
+    {
+      "filename": "circle_mandala_drawing.svg",
+      "title": "Circle mandala drawing",
+      "author": "Nevit Dilmen",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Circle_mandala_drawing.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Circle_mandala_drawing.svg",
+      "dimensions": "487 x 487",
+      "reported_size": "75 KB",
+      "license": "CC BY-SA 4.0 (also offered under GFDL)",
+      "tests": [
+        "dense repeated geometry",
+        "nested paths",
+        "symmetry"
+      ]
+    },
+    {
+      "filename": "daire4_mandala_drawing.svg",
+      "title": "Daire4 mandala drawing",
+      "author": "Nevit Dilmen",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Daire4_mandala_drawing.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Daire4_mandala_drawing.svg",
+      "dimensions": "500 x 500",
+      "reported_size": "28 KB",
+      "license": "CC BY-SA 4.0 (also offered under GFDL)",
+      "tests": [
+        "concentric geometry",
+        "path precision",
+        "repetition"
+      ]
+    },
+    {
+      "filename": "mandala_square.svg",
+      "title": "Mandala square",
+      "author": "Nevit Dilmen",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Mandala_square.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Mandala_square.svg",
+      "dimensions": "500 x 500",
+      "reported_size": "72 KB",
+      "license": "CC BY-SA 4.0 (also offered under GFDL)",
+      "tests": [
+        "four-fold symmetry",
+        "ornamental geometry",
+        "complex boundaries"
+      ]
+    },
+    {
+      "filename": "linea_mandala_drawing.svg",
+      "title": "Linea mandala drawing",
+      "author": "Nevit Dilmen",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Linea_mandala_drawing.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Linea_mandala_drawing.svg",
+      "dimensions": "493 x 493",
+      "reported_size": "55 KB",
+      "license": "CC BY-SA 4.0 (also offered under GFDL)",
+      "tests": [
+        "thin linework",
+        "repeated curves",
+        "path density"
+      ]
+    },
+    {
+      "filename": "abstract_botanical_pattern.svg",
+      "title": "Abstract botanical pattern",
+      "author": "Jameela P.",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Abstract_botanical_pattern.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Abstract_botanical_pattern.svg",
+      "dimensions": "2012 x 3254 (nominal)",
+      "reported_size": "226 KB",
+      "license": "CC BY-SA 4.0",
+      "tests": [
+        "organic curves",
+        "botanical shapes",
+        "large canvas"
+      ]
+    },
+    {
+      "filename": "mandala_art.svg",
+      "title": "Mandala Art",
+      "author": "Mandala art",
+      "source_page": "https://commons.wikimedia.org/wiki/File:Mandala_Art.svg",
+      "download_url": "https://commons.wikimedia.org/wiki/Special:Redirect/file/Mandala_Art.svg",
+      "dimensions": "512 x 512",
+      "reported_size": "10 KB",
+      "license": "CC BY-SA 4.0",
+      "tests": [
+        "multi-shape illustration",
+        "symmetry",
+        "color/shape segmentation"
+      ]
+    }
+  ]
+}

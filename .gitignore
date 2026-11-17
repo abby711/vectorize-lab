@@ -1,0 +1,32 @@
+# generated benchmark output
+bench-out/
+
+# a photo of a real person — kept locally for testing, not published
+samples/RK.jpg
+
+python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# editors / OS
+.DS_Store
+.vscode/
+.idea/
+
+# generated comparison output
+compare-*/
+
+# web downloads, licence unknown — kept local
+samples/real/
+samples/real-1024/
+dataset/*.jpeg
+dataset/*.jpg
+dataset/mYb0*
+
+# real-world SVG benchmark — licences vary, kept local
+dataset/external/
+dataset/vector_image_to_vector_benchmark/assets/
+samples/external/
