@@ -35,11 +35,20 @@ def raster_width(svg_text, fallback):
     return fallback
 
 
-def rasterize(svg_path, png_path, width):
+def is_transparent(svg_text):
+    """data-transparent on the root keeps the raster's background clear."""
+    root = re.search(r"<svg\b[^>]*>", svg_text)
+    return bool(root and re.search(r'\bdata-transparent="(true|1)"', root.group(0)))
+
+
+def rasterize(svg_path, png_path, width, transparent=False):
     import cairosvg
 
     cairosvg.svg2png(
-        url=svg_path, write_to=png_path, output_width=width, background_color="white"
+        url=svg_path,
+        write_to=png_path,
+        output_width=width,
+        background_color=None if transparent else "white",
     )
 
 
@@ -75,8 +84,9 @@ def main(argv=None):
         geometry = count_editable_points(text)
         width = args.width or raster_width(text, IMAGE_WIDTH)
 
-        rasterize(svg_path, png_path, width)
-        truth[png_name] = {"source": name, "width": width, **geometry}
+        transparent = is_transparent(text)
+        rasterize(svg_path, png_path, width, transparent)
+        truth[png_name] = {"source": name, "width": width, "transparent": transparent, **geometry}
 
         print(
             f"{png_name}: {width}px wide, {geometry['shapes']} shapes, "

@@ -722,6 +722,12 @@ def label_image(rgb, options):
         reach,
     )
 
+    key = getattr(options, "key_colour", None)
+    if key is not None and len(palette):
+        # The key must be in the palette before labelling, so edge pixels
+        # against transparency are read as blends with it.
+        palette, _ = with_colour(palette, key)
+
     if len(palette) >= 2 and coverage >= options.min_flat_coverage:
         label_map, blends = assign_labels(rgb, palette, pure_delta, options.blend_residual, report=True, reach=reach)
         palette, label_map, _ = refine_palette(rgb, palette, label_map, blends, options, pure_delta, reach=reach)
@@ -730,6 +736,48 @@ def label_image(rgb, options):
         label_map, palette = _adaptive_palette(rgb, options)
         mode = "kmeans"
     return Labelling(palette, label_map, mode, noise, raw_noise, rgb, reach=reach)
+
+
+def with_colour(palette, colour, match_delta=3.0):
+    """Palette containing `colour`, and its index. Reuses an entry within match_delta ΔE."""
+    colour = np.asarray(colour, dtype=np.uint8).reshape(1, 3)
+    if len(palette):
+        distance = np.linalg.norm(
+            srgb_to_lab(palette.astype(np.float64) / 255.0) - srgb_to_lab(colour / 255.0), axis=1
+        )
+        closest = int(np.argmin(distance))
+        if float(distance[closest]) <= match_delta:
+            return palette, closest
+    return np.concatenate([palette, colour]).astype(np.uint8), len(palette)
+
+
+def force_clear(labelling, alpha, key, solid=0.98):
+    """Give the key's label to exactly the pixels under half opacity. Returns that label.
+
+    A partly transparent pixel is labelled by the colour it was composited
+    from, recovered by undoing the composite. Otherwise a soft edge reads
+    as a band of colours halfway to the key, which no artwork contains.
+    """
+    palette, index = with_colour(labelling.palette, key)
+    label_map = labelling.label_map.copy()
+    clear = alpha < 0.5
+    relabel = ~clear & ((label_map == index) | (alpha < solid))
+    label_map[clear] = index
+    others = np.delete(np.arange(len(palette)), index)
+    if relabel.any() and len(others):
+        opacity = alpha[relabel][:, None]
+        composite = labelling.image[relabel].astype(np.float64)
+        straight = (composite - (1.0 - opacity) * np.asarray(key, dtype=np.float64)) / opacity
+        pixels = np.clip(np.round(straight), 0, 255).astype(np.uint8)[None]
+        nearest, _ = _nearest_palette(pixels, palette[others])
+        label_map[relabel] = others[nearest[0]]
+
+    used = np.unique(np.append(label_map, index))
+    remap = np.full(len(palette), -1, dtype=np.int32)
+    remap[used] = np.arange(len(used), dtype=np.int32)
+    labelling.palette = palette[used]
+    labelling.label_map = remap[label_map]
+    return int(remap[index])
 
 
 def partition_labels(labelling, options, area_scale=1.0):

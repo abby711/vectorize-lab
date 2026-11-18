@@ -78,10 +78,80 @@ bulging ends: the bars are 7.7 px wide with a 2 px corner radius, and the
 fitted curve stays within the 0.6 px tolerance but is visible when zoomed
 in. `--tolerance 0.3` fixes it at the cost of more points.
 
-A seventh scene, a sunset with gradients, isn't in that table. v2 turns
-the gradient into 36 bands of flat colour (99.6% agreement, 16× the
-points); VTracer flattens the sky to a single colour (72.7%). Neither is
-a good result. It needs proper gradient fills.
+A seventh scene, a sunset with gradients, is covered in the next section.
+
+## Gradients
+
+The sunset has a sky drawn as a linear gradient, a glow around the sun
+drawn as a radial gradient that fades to transparent, and two flat hills.
+
+![Gradient sky](images/gradients.png)
+
+| Engine | Anchors vs original | Colour error | Agreement |
+|---|---|---|---|
+| v2 | 1.36× | 0.70 | 100.0% |
+| v2 without gradient fills | 16.9× | 2.07 | 99.6% |
+| VTracer `--simplify 2` | 1.00× | 18.32 | 72.7% |
+
+Without gradient fills, v2 slices the sky into bands of flat colour.
+VTracer flattens the whole sky to one colour and drops the glow.
+
+A gradient has no flat colours, so the palette cuts it into bands. Where
+two bands meet inside a gradient, the colour changes across the boundary
+by about as much as it does from one pixel to the next inside each band.
+At a real edge, even a blurred one, it changes far more. v2 groups bands
+joined by boundaries like that, then fits a linear or radial gradient to
+the group's pixels, with as few colour stops as it can. If the fit
+doesn't reproduce the pixels closely enough, it tries a gradient
+underneath with one or more radial glows over it that fade to
+transparent. Groups that still don't fit are split in half and tried
+again. Bands that can't be explained stay as flat shapes.
+
+On the sunset, the sky comes back as one rectangle with a four-stop
+linear gradient, and the glow as a circle with a radial gradient whose
+opacity falls from 0.56 to 0 (the original fades from 1 to 0, but the
+sun covers the middle).
+
+Random scenes with a linear-gradient rectangle and a radial-gradient
+circle (`test_gradients_become_gradient_fills`) come back as three
+shapes and 12 anchors, with a mean colour error of 0.2–0.4.
+
+Upscaled or blurred flat artwork doesn't trigger it: the badge fixture
+enlarged 3× still traces with no gradient fills.
+
+## Transparent images
+
+Two fixtures are rendered without a background: a set of icons (a
+padlock with a keyhole, a ring with a dot inside it, a heart, a speech
+bubble) and a logo made of letter-like shapes with holes. Colour error
+is measured over white. "Opaque area" is the overlap between the parts
+of the input and output that are at least half opaque (intersection
+over union).
+
+![Transparent fixtures](images/transparency.png)
+
+| Fixture | Engine | Anchors vs original | Colour error | Opaque area |
+|---|---|---|---|---|
+| Icons | v2 | 0.86× | 0.29 | 99.5% |
+| | VTracer `--simplify 2` | 0.86× | 2.63 | 94.1% |
+| | VTracer default | 2.92× | 2.23 | 95.0% |
+| Logo | v2 | 0.95× | 0.14 | 99.9% |
+| | VTracer `--simplify 2` | 0.74× | 2.73 | 93.3% |
+| | VTracer default | 3.90× | 1.72 | 95.4% |
+
+v2 composites the image over a key colour picked to be as far as
+possible from every colour in the artwork, then traces as usual and
+leaves the key colour's regions out of the SVG. Edge pixels that are
+partly transparent become blends of the shape's colour and the key, so
+they're read the same way as antialiasing. A hole that contains any
+transparency is never filled in, and no shape is extended underneath a
+transparent area.
+
+![Padlock, zoomed in](images/transparency-zoom.png)
+
+The legs of v2's padlock shackle taper slightly. Each leg and its half
+of the arc are fitted as one curve, which stays within the 0.6 px
+tolerance; `--tolerance 0.3` keeps them straight.
 
 ## Real images
 
@@ -92,20 +162,24 @@ in the repo because their licences are unknown.
 
 | Image | v2 points | v2 error | VTracer points | VTracer error |
 |---|---|---|---|---|
-| Clip-art mushroom | 1,044 | 3.52 | 2,944 | 7.61 |
-| Vector flower | 2,833 | 2.08 | 5,860 | 3.71 |
-| Cartoon mascot | 6,320 | 4.22 | 11,191 | 4.98 |
-| Isometric city infographic | 13,115 | 3.78 | 22,921 | 6.42 |
-| Low-poly fox | 19,578 | 8.24 | 23,730 | 12.15 |
-| Neon gradient blobs | 11,795 | 13.28 | 21,183 | 16.12 |
-| Graffiti alphabet | 47,209 | 11.76 | 140,143 | 10.76 |
-| Botanical engraving | 22,155 | 21.18 | 192,430 | 18.58 |
-| Stained-glass peacock | 42,721 | 16.46 | 144,932 | 13.44 |
+| Clip-art mushroom | 1,044 | 3.51 | 2,944 | 7.61 |
+| Vector flower | 2,525 | 2.01 | 5,860 | 3.71 |
+| Cartoon mascot | 5,869 | 4.04 | 11,191 | 4.98 |
+| Isometric city infographic | 11,893 | 3.56 | 22,921 | 6.42 |
+| Low-poly fox | 17,705 | 7.39 | 23,730 | 12.15 |
+| Neon gradient blobs | 11,633 | 12.88 | 21,183 | 16.12 |
+| Graffiti alphabet | 46,445 | 11.66 | 140,143 | 10.76 |
+| Botanical engraving | 21,635 | 21.06 | 192,430 | 18.58 |
+| Stained-glass peacock | 41,753 | 16.20 | 144,932 | 13.44 |
 
 v2 is ahead on both counts for the first six. On the last three, which
 are mostly texture, VTracer is more accurate. Part of the gap comes from
-v2's 6,000-region limit: with the limit raised, the graffiti comes out at
-53,320 points and an error of 13.4.
+v2's 6,000-region limit, which the graffiti and the peacock both hit.
+
+Gradient fills brought every image down a little, by 0–11% in points
+and 0–10% in error. The neon blobs gained the least for an image made of
+gradients: they overlap and blend into each other, so few groups of
+bands fit a single linear or radial gradient.
 
 ## What each part contributes
 
@@ -138,7 +212,8 @@ python3 compare.py --gt-only          # v1, v2 and VTracer on every fixture with
 ```
 
 Other engines can be passed with `--engines`, for example
-`v2,v2-no-coverage,v2-greedy-fit` for the ablation, or
+`v2,v2-no-coverage,v2-greedy-fit` for the ablation,
+`v2,v2-no-gradients --only 23-` for the gradient comparison, or
 `v2-tol-0.4,v2,v2-tol-1.0,vtracer-simplify-1,vtracer-simplify-3` for the
 tolerance sweep. Results go to `compare-out/COMPARISON.md`.
 

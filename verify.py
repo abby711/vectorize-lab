@@ -125,9 +125,33 @@ def render_with_cairo(svg_path, size):
     return Image.open(io.BytesIO(payload)).convert("RGB")
 
 
+def load_over_white(source_path):
+    """Transparent sources are judged as they'd look on a white page, as the render is."""
+    image = Image.open(source_path).convert("RGBA")
+    page = Image.new("RGBA", image.size, (255, 255, 255, 255))
+    return Image.alpha_composite(page, image).convert("RGB")
+
+
+def alpha_score(source_path, svg_path):
+    """(IoU of the half-opaque areas, mean absolute alpha error 0..1) against the source."""
+    import io
+
+    import cairosvg
+
+    source = Image.open(source_path).convert("RGBA")
+    payload = cairosvg.svg2png(url=svg_path, output_width=source.width, output_height=source.height)
+    rendered = Image.open(io.BytesIO(payload)).convert("RGBA")
+    expected = np.array(source)[..., 3].astype(np.float64) / 255.0
+    actual = np.array(rendered)[..., 3].astype(np.float64) / 255.0
+    union = (expected >= 0.5) | (actual >= 0.5)
+    overlap = (expected >= 0.5) & (actual >= 0.5)
+    iou = float(overlap.sum() / union.sum()) if union.any() else 1.0
+    return iou, float(np.abs(expected - actual).mean())
+
+
 def score(source_path, svg_path, renderer="auto"):
     """renderer: 'auto' prefers cairosvg, 'builtin' forces the local parser."""
-    source = Image.open(source_path).convert("RGB")
+    source = load_over_white(source_path)
 
     rendered = None
     if renderer != "builtin":

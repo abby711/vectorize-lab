@@ -35,10 +35,11 @@ def _colour(rng):
     return "#{:02x}{:02x}{:02x}".format(*(rng.randrange(256) for _ in range(3)))
 
 
-def random_scene(seed):
+def random_scene(seed, background=True):
     """A flat illustration: background plus 3–7 overlapping primitives and blobs."""
     rng = random.Random(seed)
-    parts = [f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{_colour(rng)}"/>']
+    backdrop = f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{_colour(rng)}"/>'
+    parts = [backdrop] if background else []
     for _ in range(rng.randint(3, 7)):
         kind = rng.choice(["circle", "ellipse", "rect", "polygon", "blob"])
         cx, cy = rng.uniform(30, WIDTH - 30), rng.uniform(30, HEIGHT - 30)
@@ -91,6 +92,23 @@ def _rasterise(svg_text, background=None):
         background_color=background,
     )
     return np.array(Image.open(io.BytesIO(payload)).convert("RGB"), dtype=np.int16)
+
+
+def _rasterise_rgba(svg_text):
+    payload = cairosvg.svg2png(bytestring=svg_text.encode("utf-8"), output_width=WIDTH, output_height=HEIGHT)
+    return np.array(Image.open(io.BytesIO(payload)).convert("RGBA"))
+
+
+def _trace_rgba(rgba):
+    buffer = io.BytesIO()
+    Image.fromarray(rgba).save(buffer, format="PNG")
+    buffer.seek(0)
+    return vectorize_v2(buffer)
+
+
+def _over_white(rgba):
+    opacity = rgba[..., 3:4].astype(np.float64) / 255.0
+    return rgba[..., :3] * opacity + 255.0 * (1.0 - opacity)
 
 
 def _trace(seed, options=None):
@@ -209,6 +227,91 @@ def test_rejects_rather_than_grinds():
     raise AssertionError("pure noise was traced instead of rejected")
 
 
+def test_transparency_kept():
+    """A transparent PNG traces to a transparent SVG with the same opaque areas."""
+    for seed in SEEDS[:6]:
+        source = _rasterise_rgba(random_scene(seed, background=False))
+        rendered = _rasterise_rgba(_trace_rgba(source).svg)
+        expected, actual = source[..., 3] >= 128, rendered[..., 3] >= 128
+        iou = float((expected & actual).sum() / max(1, (expected | actual).sum()))
+        assert iou > 0.99, f"seed {seed}: opaque-area IoU {iou:.4f}"
+        alpha_error = float(np.abs(source[..., 3].astype(np.int16) - rendered[..., 3]).mean() / 255.0)
+        assert alpha_error < 0.01, f"seed {seed}: mean alpha error {alpha_error:.4f}"
+        colour_error = float(np.abs(_over_white(source) - _over_white(rendered)).mean())
+        assert colour_error < 1.5, f"seed {seed}: mean error over white {colour_error:.2f}"
+
+
+def test_soft_transparent_edges():
+    """Blurry edges against transparency add no colours: upscaled art traces like the original.
+
+    The shapes don't touch, so every soft edge is against transparency.
+    """
+    rng = random.Random(5)
+    for _ in range(4):
+        fills = [_colour(rng) for _ in range(4)]
+        svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}">'
+            f'<circle cx="50" cy="50" r="32" fill="{fills[0]}"/>'
+            f'<rect x="120" y="20" width="90" height="60" rx="10" fill="{fills[1]}"/>'
+            f'<path d="M20 170 L70 100 L110 170 Z" fill="{fills[2]}"/>'
+            f'<path d="M180 95a40 40 0 1 0 0.01 0ZM180 115a20 20 0 1 1 -0.01 0Z" fill="{fills[3]}" fill-rule="evenodd"/>'
+            "</svg>"
+        )
+        source = _rasterise_rgba(svg)
+        soft = np.array(Image.fromarray(source).resize((WIDTH * 3, HEIGHT * 3), Image.BICUBIC))
+        palette = _trace_rgba(soft).palette
+        assert len(palette) == 4, f"{fills}: traced {palette}"
+
+
+def test_holes_stay_transparent():
+    """A ring's hole stays clear, and a dot inside the hole is still drawn."""
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}">'
+        '<path d="M120 30a60 60 0 1 0 0.01 0ZM120 60a30 30 0 1 1 -0.01 0Z" fill="#1d3557" fill-rule="evenodd"/>'
+        '<circle cx="120" cy="90" r="9" fill="#e63946"/></svg>'
+    )
+    result = _trace_rgba(_rasterise_rgba(svg))
+    assert "#ffffff" not in result.svg.lower(), "a background was painted"
+    rendered = _rasterise_rgba(result.svg)
+    assert rendered[90, 120, 3] == 255 and rendered[90, 120, 0] > 200, "dot in the hole is missing"
+    for x, y in ((120, 66), (96, 90), (144, 90), (5, 5)):
+        assert rendered[y, x, 3] == 0, f"({x}, {y}) should be transparent, alpha {rendered[y, x, 3]}"
+    assert rendered[90, 70, 3] == 255, "ring is missing"
+
+
+def _gradient_scene(rng):
+    angle = rng.uniform(0, math.pi)
+    dx, dy = 0.5 * math.cos(angle), 0.5 * math.sin(angle)
+    stops = "".join(
+        f'<stop offset="{offset}" stop-color="{_colour(rng)}"/>' for offset in (0, rng.choice([0.4, 0.6]), 1)
+    )
+    return (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}"><defs>'
+        f'<linearGradient id="a" x1="{0.5 - dx:.3f}" y1="{0.5 - dy:.3f}" x2="{0.5 + dx:.3f}" y2="{0.5 + dy:.3f}">{stops}</linearGradient>'
+        f'<radialGradient id="b"><stop offset="0" stop-color="{_colour(rng)}"/><stop offset="1" stop-color="{_colour(rng)}"/></radialGradient>'
+        f'</defs><rect width="{WIDTH}" height="{HEIGHT}" fill="{_colour(rng)}"/>'
+        f'<rect x="12" y="20" width="120" height="140" rx="14" fill="url(#a)"/>'
+        f'<circle cx="185" cy="90" r="45" fill="url(#b)"/></svg>'
+    )
+
+
+def test_gradients_become_gradient_fills():
+    """Gradient-filled shapes come back as gradient fills, not stacks of bands."""
+    rng = random.Random(23)
+    for _ in range(4):
+        svg = _gradient_scene(rng)
+        source = _rasterise(svg, "white").astype(np.uint8)
+        buffer = io.BytesIO()
+        Image.fromarray(source).save(buffer, format="PNG")
+        buffer.seek(0)
+        result = vectorize_v2(buffer)
+        gradients = result.svg.count("Gradient id=")
+        assert gradients >= 2, f"{gradients} gradient fills for two gradients"
+        assert result.path_segment_count <= 48, f"{result.path_segment_count} anchors"
+        error = float(np.abs(_rasterise(result.svg, "white") - source.astype(np.int16)).mean())
+        assert error < 1.5, f"mean error {error:.2f}"
+
+
 JPEG_GUARD = 5.0  # today's level; the target is 2.0 — see docs/APPROACH.md, known gaps
 
 
@@ -230,7 +333,6 @@ def test_jpeg_close_to_png():
 
 
 KNOWN_LIMITS = {
-    "23-gradient-sky.png": "gradients are traced as bands, not gradient fills",
     "24-line-art.png": "strokes are traced as filled outlines, not centrelines",
 }
 

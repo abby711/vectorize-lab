@@ -328,6 +328,9 @@ def fit_spans(points, firsts, lasts, tangents_out, tangents_in, free_start, free
     kinds = np.where(line_error <= settings.tolerance, "line", "cubic")
     is_line = kinds == "line"
     max_error = np.where(is_line, line_error, max_error)
+    # The tie-break between equal-count paths must score a line as the line it is.
+    line_squared = np.sum(distance * distance, axis=1) * (settings.samples / distance.shape[1])
+    squared = np.where(is_line, line_squared, squared)
     control_1 = np.where(is_line[:, None], start + chord / 3, control_1)
     control_2 = np.where(is_line[:, None], end - chord / 3, control_2)
     return max_error, squared, kinds, control_1, control_2

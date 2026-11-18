@@ -5,6 +5,7 @@
     "primitives": 4,
     "shapes": 11,
     "source": "10-flat-scene.svg",
+    "transparent": false,
     "width": 480
   },
   "11-brand-mark.png": {
@@ -13,6 +14,7 @@
     "primitives": 3,
     "shapes": 6,
     "source": "11-brand-mark.svg",
+    "transparent": false,
     "width": 480
   },
   "12-badge.png": {
@@ -21,6 +23,7 @@
     "primitives": 9,
     "shapes": 10,
     "source": "12-badge.svg",
+    "transparent": false,
     "width": 480
   },
   "13-mosaic.png": {
@@ -29,6 +32,7 @@
     "primitives": 8,
     "shapes": 8,
     "source": "13-mosaic.svg",
+    "transparent": false,
     "width": 480
   },
   "14-blobs.png": {
@@ -37,6 +41,7 @@
     "primitives": 1,
     "shapes": 4,
     "source": "14-blobs.svg",
+    "transparent": false,
     "width": 480
   },
   "15-plant.png": {
@@ -45,6 +50,7 @@
     "primitives": 3,
     "shapes": 7,
     "source": "15-plant.svg",
+    "transparent": false,
     "width": 480
   },
   "16-weather.png": {
@@ -53,6 +59,7 @@
     "primitives": 10,
     "shapes": 14,
     "source": "16-weather.svg",
+    "transparent": false,
     "width": 480
   },
   "20-city-night.png": {
@@ -61,6 +68,7 @@
     "primitives": 254,
     "shapes": 254,
     "source": "20-city-night.svg",
+    "transparent": false,
     "width": 640
   },
   "21-confetti.png": {
@@ -69,6 +77,7 @@
     "primitives": 61,
     "shapes": 61,
     "source": "21-confetti.svg",
+    "transparent": false,
     "width": 480
   },
   "22-icon-grid.png": {
@@ -77,6 +86,7 @@
     "primitives": 61,
     "shapes": 65,
     "source": "22-icon-grid.svg",
+    "transparent": false,
     "width": 640
   },
   "23-gradient-sky.png": {
@@ -85,6 +95,7 @@
     "primitives": 3,
     "shapes": 5,
     "source": "23-gradient-sky.svg",
+    "transparent": false,
     "width": 480
   },
   "24-line-art.png": {
@@ -93,6 +104,7 @@
     "primitives": 2,
     "shapes": 7,
     "source": "24-line-art.svg",
+    "transparent": false,
     "width": 480
   },
   "25-scene-tiny.png": {
@@ -101,6 +113,7 @@
     "primitives": 4,
     "shapes": 11,
     "source": "25-scene-tiny.svg",
+    "transparent": false,
     "width": 160
   },
   "26-badge-large.png": {
@@ -109,6 +122,25 @@
     "primitives": 9,
     "shapes": 10,
     "source": "26-badge-large.svg",
+    "transparent": false,
     "width": 1440
+  },
+  "30-transparent-icons.png": {
+    "anchors": 66,
+    "paths": 5,
+    "primitives": 4,
+    "shapes": 9,
+    "source": "30-transparent-icons.svg",
+    "transparent": true,
+    "width": 480
+  },
+  "31-transparent-logo.png": {
+    "anchors": 42,
+    "paths": 3,
+    "primitives": 1,
+    "shapes": 4,
+    "source": "31-transparent-logo.svg",
+    "transparent": true,
+    "width": 420
   }
 }

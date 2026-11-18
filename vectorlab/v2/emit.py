@@ -56,11 +56,45 @@ def primitive_element(primitive, fill, scale):
     )
 
 
-def build_document(elements, width, height):
+def gradient_element(gradient, ident, scale):
+    stops = "".join(
+        f'<stop offset="{_number(min(max(offset, 0.0), 1.0))}" stop-color="{to_hex(_rounded(colour))}"'
+        + (f' stop-opacity="{_number(opacity)}"' if opacity < 0.995 else "")
+        + "/>"
+        for offset, colour, opacity in gradient.stops
+    )
+    if gradient.kind == "linear":
+        x1, y1, x2, y2 = (_number(value * scale) for value in gradient.geometry)
+        return (
+            f'<linearGradient id="{ident}" gradientUnits="userSpaceOnUse" '
+            f'x1="{x1}" y1="{y1}" x2="{x2}" y2="{y2}">{stops}</linearGradient>'
+        )
+    cx, cy, radius = (_number(value * scale) for value in gradient.geometry)
+    return (
+        f'<radialGradient id="{ident}" gradientUnits="userSpaceOnUse" '
+        f'cx="{cx}" cy="{cy}" r="{radius}">{stops}</radialGradient>'
+    )
+
+
+def glow_element(gradient, fill, scale):
+    """The circle a fading radial gradient is drawn in."""
+    cx, cy, radius = (_number(value * scale) for value in gradient.geometry)
+    return f'<circle cx="{cx}" cy="{cy}" r="{radius}" fill="{fill}"/>'
+
+
+def _rounded(colour):
+    return [min(255, max(0, round(channel))) for channel in colour]
+
+
+def build_document(elements, width, height, defs=()):
     lines = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}">'
     ]
+    if defs:
+        lines.append("<defs>")
+        lines.extend(defs)
+        lines.append("</defs>")
     lines.extend(elements)
     lines.append("</svg>")
     return "\n".join(lines)

@@ -1,9 +1,11 @@
 """vectorlab v2 — sub-pixel, globally fitted, primitive-aware tracing.
 
-    decode → detect palette → blend-aware labels → partition (merge, never drop)
+    decode (transparency composited over a key colour)
+           → detect palette → blend-aware labels → partition (merge, never drop)
+           → bands of one gradient grouped into a gradient-filled shape
            → paint order by enclosed area, holes filled
            → coverage field → marching squares → primitive or optimal spline
-           → SVG
+           → SVG, leaving out the key colour's regions
 
 Every idea is a switch on V2Options so each one's contribution can be
 measured on its own.
@@ -16,10 +18,12 @@ from PIL import Image, ImageDraw
 
 from ..metrics import count_editable_points
 from ..pipeline import VectorizeRejected, VectorizeResult
-from .contour import coverage_field, trace_loops
-from .emit import build_document, path_data, primitive_element, to_hex
+from ..quantize import srgb_to_lab
+from .contour import coverage_field, signed_area, trace_loops
+from .emit import build_document, glow_element, gradient_element, path_data, primitive_element, to_hex
 from .fitting import FitSettings, fit_loops
-from .partition import label_image, label_partition, partition_labels
+from .gradients import merge_gradients
+from .partition import force_clear, label_image, label_partition, partition_labels
 from .primitives import detect_primitive
 
 _MARGIN = 2
@@ -58,32 +62,87 @@ class V2Options:
     use_stacking: bool = True
     use_occlusion: bool = True
     use_blend_labels: bool = True
+    use_gradients: bool = True
+
+
+@dataclass
+class _Source:
+    rgb: np.ndarray
+    alpha: np.ndarray = None  # 0..1, only when the image has transparency
+    key: np.ndarray = None  # the colour transparency was composited over
+    scale: float = 1.0
+    was_jpeg: bool = False
+
+
+_OPAQUE = 250
+
+
+def _key_colour(rgba):
+    """The colour furthest from everything opaque in the image.
+
+    Composited over it, a partly transparent edge pixel becomes a blend of
+    two palette colours, which the labeller and the coverage field
+    already know how to unmix.
+    """
+    pixels = rgba[rgba[..., 3] >= 128][:, :3]
+    if not len(pixels):
+        return np.array([255, 0, 255], dtype=np.uint8)
+    chosen = np.random.default_rng(0).choice(len(pixels), min(20000, len(pixels)), replace=False)
+    sample = srgb_to_lab(pixels[chosen].astype(np.float64) / 255.0)
+    levels = np.arange(0, 256, 51)
+    candidates = np.stack(np.meshgrid(levels, levels, levels, indexing="ij"), axis=-1).reshape(-1, 3)
+    candidate_lab = srgb_to_lab(candidates / 255.0)
+    # A low quantile, not the minimum, so a few stray pixels can't veto a key.
+    clearance = [
+        float(np.quantile(np.linalg.norm(sample - lab, axis=1), 0.002)) for lab in candidate_lab
+    ]
+    return candidates[int(np.argmax(clearance))].astype(np.uint8)
+
+
+def _resize(array, size):
+    return np.array(Image.fromarray(array).resize(size, Image.BOX))
 
 
 def _load(path_or_file, max_dimension):
-    """Returns (rgb, scale, was_jpeg)."""
     opened = Image.open(path_or_file)
     was_jpeg = opened.format == "JPEG"
-    image = opened.convert("RGB")
+    has_alpha = "A" in opened.getbands() or "transparency" in opened.info
+    rgba = np.array(opened.convert("RGBA")) if has_alpha else None
+    if rgba is not None and (rgba[..., 3] < _OPAQUE).any():
+        key = _key_colour(rgba)
+        opacity = rgba[..., 3:4].astype(np.float64) / 255.0
+        rgb = np.round(rgba[..., :3] * opacity + key * (1.0 - opacity)).astype(np.uint8)
+        alpha = rgba[..., 3]
+    else:
+        key, alpha = None, None
+        rgb = rgba[..., :3].copy() if rgba is not None else np.array(opened.convert("RGB"))
+
     scale = 1.0
-    longest = max(image.size)
-    if max_dimension and longest > max_dimension:
-        scale = max_dimension / float(longest)
+    height, width = rgb.shape[:2]
+    if max_dimension and max(height, width) > max_dimension:
+        scale = max_dimension / float(max(height, width))
+        size = (max(1, round(width * scale)), max(1, round(height * scale)))
         # Box filtering, not Lanczos: coverage recovery assumes an edge
         # pixel is an area average, and Lanczos ringing paints false halos.
-        image = image.resize(
-            (max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.BOX
-        )
-    return np.array(image), scale, was_jpeg
+        rgb = _resize(rgb, size)
+        alpha = _resize(alpha, size) if alpha is not None else None
+    alpha = alpha.astype(np.float64) / 255.0 if alpha is not None else None
+    return _Source(rgb, alpha, key, scale, was_jpeg)
 
 
-def _fill_holes(mask):
-    """Mask plus every enclosed pocket. Background is 8-connected, matching the tracer."""
+def _fill_holes(mask, blocked=None):
+    """Mask plus every enclosed pocket. Background is 8-connected, matching the tracer.
+
+    A pocket holding any `blocked` pixel stays open: filling it would
+    paint over a transparent hole.
+    """
     outside, values = label_partition((~mask).astype(np.int8), connectivity=8)
-    border = np.unique(
+    open_ids = np.unique(
         np.concatenate((outside[0], outside[-1], outside[:, 0], outside[:, -1]))
     )
-    pocket = ~mask & ~np.isin(outside, border)
+    if blocked is not None and blocked.any():
+        open_ids = np.union1d(open_ids, np.unique(outside[blocked & ~mask]))
+    pocket = ~mask & ~np.isin(outside, open_ids)
     return mask | pocket
 
 
@@ -182,24 +241,76 @@ def _blend_hidden_edges(coverage, measured, mask, hull_coverage):
     return result
 
 
-def _shape_loops(partition, component, padded_labels, padded_colours, palette, options, rank=None):
-    """Traced loops for one component, in image coordinates."""
-    y0, x0, y1, x1 = partition.boxes[component]
-    rows = slice(y0, y1 + 2 * _MARGIN)
-    columns = slice(x0, x1 + 2 * _MARGIN)
+@dataclass
+class _Canvas:
+    """Image-wide arrays, padded by _MARGIN so every crop has a border."""
 
-    component_crop = np.pad(partition.component_map, _MARGIN, constant_values=-1)[rows, columns]
+    labels: np.ndarray
+    colours: np.ndarray
+    components: np.ndarray
+    clear: np.ndarray  # transparent pixels; all False for an opaque image
+    palette: np.ndarray  # 0..1 floats
+    rank: np.ndarray = None  # paint order; -1 for components never painted
+
+    def crop(self, box):
+        y0, x0, y1, x1 = box
+        return slice(y0, y1 + 2 * _MARGIN), slice(x0, x1 + 2 * _MARGIN)
+
+
+def _make_canvas(partition, rgb, clear_index):
+    clear = (
+        partition.label_map == clear_index
+        if clear_index is not None
+        else np.zeros(partition.label_map.shape, dtype=bool)
+    )
+    return _Canvas(
+        labels=np.pad(partition.label_map, _MARGIN, constant_values=-1),
+        colours=np.pad(rgb.astype(np.float64) / 255.0, ((_MARGIN, _MARGIN), (_MARGIN, _MARGIN), (0, 0))),
+        components=np.pad(partition.component_map, _MARGIN, constant_values=-1),
+        clear=np.pad(clear, _MARGIN, constant_values=False),
+        palette=partition.palette.astype(np.float64) / 255.0,
+    )
+
+
+def _paint_rank(partition, canvas, options, clear_components):
+    """Largest enclosed area first: anything inside a shape's filled holes is smaller, so lands on top."""
+    count = len(partition.areas)
+    filled_areas = np.zeros(count, dtype=np.int64)
+    for component in range(count):
+        rows, columns = canvas.crop(partition.boxes[component])
+        crop = canvas.components[rows, columns] == component
+        if options.use_stacking:
+            crop = _fill_holes(crop, canvas.clear[rows, columns])
+        filled_areas[component] = int(crop.sum())
+    order = [
+        component
+        for component in sorted(range(count), key=lambda component: (-filled_areas[component], component))
+        if not clear_components[component]
+    ]
+    rank = np.full(count, -1, dtype=np.int64)
+    rank[np.array(order, dtype=np.int64)] = np.arange(len(order))
+    return order, rank
+
+
+def _shape_loops(partition, component, canvas, options):
+    """Traced loops for one component, in image coordinates."""
+    y0, x0 = partition.boxes[component][:2]
+    rows, columns = canvas.crop(partition.boxes[component])
+
+    component_crop = canvas.components[rows, columns]
     mask = component_crop == component
     hull_coverage = None
     if options.use_stacking:
-        mask = _fill_holes(mask)
-        if options.use_occlusion and rank is not None:
-            mask, hull_coverage = _occluded_extension(mask, component_crop, rank, rank[component])
+        mask = _fill_holes(mask, canvas.clear[rows, columns])
+        if options.use_occlusion and canvas.rank is not None:
+            mask, hull_coverage = _occluded_extension(
+                mask, component_crop, canvas.rank, canvas.rank[component]
+            )
 
-    labels = padded_labels[rows, columns]
+    labels = canvas.labels[rows, columns]
     if options.use_coverage:
         coverage, measured = coverage_field(
-            mask, labels, padded_colours[rows, columns], palette, report=True
+            mask, labels, canvas.colours[rows, columns], canvas.palette, report=True
         )
         if hull_coverage is not None:
             # Hidden edges have no antialiasing to read; their geometry is
@@ -211,7 +322,8 @@ def _shape_loops(partition, component, padded_labels, padded_colours, palette, o
     # Sample (r, c) of the once-padded field is crop pixel (r-1, c-1), whose
     # centre sits at image (x0 - margin + c - 0.5, y0 - margin + r - 0.5).
     offset = np.array([x0 - _MARGIN - 0.5, y0 - _MARGIN - 0.5])
-    loops = trace_loops(np.pad(coverage, 1))
+    # A sliver whose every pixel is under half covered traces to nothing visible.
+    loops = [loop for loop in trace_loops(np.pad(coverage, 1)) if abs(signed_area(loop)) >= 0.5]
     return [loop + offset for loop in loops], int(mask.sum())
 
 
@@ -244,41 +356,31 @@ def _partition_within_budget(labelling, view, options):
 
 def vectorize_v2(path_or_file, options=None):
     options = options or V2Options()
-    rgb, scale, was_jpeg = _load(path_or_file, options.max_dimension)
-    height, width = rgb.shape[:2]
+    source = _load(path_or_file, options.max_dimension)
+    height, width = source.rgb.shape[:2]
+    scale = source.scale
 
     blend = options.blend_residual if options.use_blend_labels else -1.0
     view = _PartitionView(options, blend)
-    view.blend_reach = options.jpeg_blend_reach if was_jpeg else 1
-    labelling = label_image(rgb, view)
+    view.blend_reach = options.jpeg_blend_reach if source.was_jpeg else 1
+    view.key_colour = source.key
+    labelling = label_image(source.rgb, view)
+    clear_index = force_clear(labelling, source.alpha, source.key) if source.key is not None else None
     partition, notes = _partition_within_budget(labelling, view, options)
-    count = len(partition.areas)
-    rgb = labelling.image
-
-    palette = partition.palette.astype(np.float64) / 255.0
-    padded_labels = np.pad(partition.label_map, _MARGIN, constant_values=-1)
-    padded_colours = np.pad(rgb.astype(np.float64) / 255.0, ((_MARGIN, _MARGIN), (_MARGIN, _MARGIN), (0, 0)))
+    fills = [None] * len(partition.areas)
+    if options.use_gradients:
+        partition, fills = merge_gradients(partition, labelling.image, labelling.image_lab, clear_index)
 
     settings = FitSettings(**{**options.fit.__dict__, "tolerance": options.tolerance})
     settings.greedy = not options.use_optimal_fit
 
-    # Largest enclosed area first: anything inside a shape's filled holes
-    # is smaller, so it is always painted on top.
-    padded_components = np.pad(partition.component_map, _MARGIN, constant_values=-1)
-    filled_areas = np.zeros(count, dtype=np.int64)
-    for component in range(count):
-        y0, x0, y1, x1 = partition.boxes[component]
-        crop = padded_components[y0 : y1 + 2 * _MARGIN, x0 : x1 + 2 * _MARGIN] == component
-        filled_areas[component] = int(_fill_holes(crop).sum()) if options.use_stacking else int(crop.sum())
-    order = sorted(range(count), key=lambda component: (-filled_areas[component], component))
-    rank = np.empty(count, dtype=np.int64)
-    rank[np.array(order, dtype=np.int64)] = np.arange(count)
+    canvas = _make_canvas(partition, labelling.image, clear_index)
+    clear_components = partition.component_label == (clear_index if clear_index is not None else -1)
+    order, canvas.rank = _paint_rank(partition, canvas, options, clear_components)
 
     shapes = []
     for component in order:
-        loops, _ = _shape_loops(
-            partition, component, padded_labels, padded_colours, palette, options, rank
-        )
+        loops, _ = _shape_loops(partition, component, canvas, options)
         if loops:
             shapes.append((component, loops))
 
@@ -299,19 +401,34 @@ def vectorize_v2(path_or_file, options=None):
     fitted_all = fit_loops(to_fit, settings)
 
     elements = []
+    defs = []
+    flat_colours = []
+
+    def gradient_url(gradient):
+        ident = f"g{len(defs) + 1}"
+        defs.append(gradient_element(gradient, ident, inverse))
+        return f"url(#{ident})"
+
     for component, primitive, span in plan:
+        gradient_fill = fills[component]
         fill = to_hex(partition.palette[partition.component_label[component]])
+        if gradient_fill is not None:
+            fill = gradient_url(gradient_fill.base)
+        elif fill not in flat_colours:
+            flat_colours.append(fill)
         if primitive is not None:
             elements.append(primitive_element(primitive, fill, inverse))
-            continue
-        start, count = span
-        fitted = fitted_all[start : start + count]
-        data = path_data(fitted, inverse)
-        if data:
-            rule = ' fill-rule="evenodd"' if len(fitted) > 1 else ""
-            elements.append(f'<path d="{data}" fill="{fill}"{rule}/>')
+        else:
+            start, count = span
+            fitted = fitted_all[start : start + count]
+            data = path_data(fitted, inverse)
+            if data:
+                rule = ' fill-rule="evenodd"' if len(fitted) > 1 else ""
+                elements.append(f'<path d="{data}" fill="{fill}"{rule}/>')
+        for glow in gradient_fill.overlays if gradient_fill is not None else ():
+            elements.append(glow_element(glow, gradient_url(glow), inverse))
 
-    document = build_document(elements, round(width * inverse), round(height * inverse))
+    document = build_document(elements, round(width * inverse), round(height * inverse), defs)
     counts = count_editable_points(document)
     return VectorizeResult(
         svg=document,
@@ -319,7 +436,7 @@ def vectorize_v2(path_or_file, options=None):
         height=round(height * inverse),
         shape_count=counts["shapes"],
         path_segment_count=counts["anchors"],
-        palette=[to_hex(colour) for colour in partition.palette],
+        palette=flat_colours,
         notes=notes,
     )
 

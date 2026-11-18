@@ -25,6 +25,10 @@ Other things it does:
   outline and no gaps show between shapes
 - uses the fewest curves that stay within the tolerance, and outputs
   circles, ellipses and rectangles as real primitives where they fit
+- turns smooth colour ramps into linear and radial gradient fills,
+  including glows that fade out to transparent
+- keeps transparency: a transparent PNG gives an SVG with no background,
+  and holes in shapes stay see-through
 - copes with JPEG artefacts, and simplifies very detailed images so the
   output stays editable
 
@@ -75,10 +79,16 @@ The full tables, the method and the ablation results are in
 ## Limitations
 
 - It's slower than VTracer: around half a second for a simple
-  illustration, and up to a minute for a very detailed 1024 px image.
-- Gradients come out as bands of flat colour.
+  illustration, and up to a minute and a half for a very detailed
+  1024 px image.
+- Gradients that overlap and blend into each other, or that aren't
+  linear or radial, still come out partly as bands of flat colour.
 - Thin strokes are traced as filled outlines, not as strokes.
-- Transparency is ignored.
+- Partly transparent fills, like a soft shadow, come out either opaque or
+  not at all, depending on whether they're more or less than half opaque.
+  Edges do keep their partial transparency.
+- Blurry or upscaled artwork, where edges are 2–3 px wide, picks up thin
+  bands of in-between colour along the edges.
 - Photographs and dense textures aren't a good fit.
 
 ## Development
