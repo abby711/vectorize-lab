@@ -152,7 +152,8 @@ def test_deterministic():
 def test_closed_and_renderable():
     for seed in SEEDS:
         _, result = _trace(seed)
-        for data in __import__("re").findall(r'\bd="([^"]*)"', result.svg):
+        # Filled paths must close every subpath; stroked lines are open by design.
+        for data in __import__("re").findall(r'\bd="([^"]*)"(?! fill="none")', result.svg):
             assert data.count("M") == data.count("Z"), f"seed {seed}: unclosed subpath"
         _rasterise(result.svg)
 
@@ -312,6 +313,77 @@ def test_gradients_become_gradient_fills():
         assert error < 1.5, f"mean error {error:.2f}"
 
 
+def _stroke_scene(rng):
+    """Four separate strokes, one per quarter: polylines, curves and a circle. Returns (svg, anchors)."""
+    parts, anchors = [f'<rect width="{WIDTH}" height="{HEIGHT}" fill="{_colour(rng)}"/>'], 4
+    for cell in range(4):
+        left, top = (cell % 2) * WIDTH / 2 + 18, (cell // 2) * HEIGHT / 2 + 18
+        right, bottom = left + WIDTH / 2 - 36, top + HEIGHT / 2 - 36
+        width = rng.uniform(2.5, 6.0)
+        style = f'fill="none" stroke="{_colour(rng)}" stroke-width="{width:.2f}" stroke-linecap="round" stroke-linejoin="round"'
+        kind = ("polyline", "curve", "circle", rng.choice(["polyline", "curve"]))[cell]
+        if kind == "circle":
+            radius = min(right - left, bottom - top) / 2
+            parts.append(f'<circle cx="{(left + right) / 2:.2f}" cy="{(top + bottom) / 2:.2f}" r="{radius:.2f}" {style}/>')
+            anchors += 4
+        elif kind == "polyline":
+            # Left to right, so a line never doubles back over itself.
+            count = rng.randint(2, 4)
+            xs = np.linspace(left, right, count)
+            points = " ".join(f"{x:.2f},{rng.uniform(top, bottom):.2f}" for x in xs)
+            parts.append(f'<polyline points="{points}" {style}/>')
+            anchors += count
+        else:
+            x = sorted(rng.uniform(left, right) for _ in range(4))
+            y = [rng.uniform(top, bottom) for _ in range(4)]
+            parts.append(f'<path d="M{x[0]:.2f} {y[0]:.2f} C{x[1]:.2f} {y[1]:.2f} {x[2]:.2f} {y[2]:.2f} {x[3]:.2f} {y[3]:.2f}" {style}/>')
+            anchors += 2
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}">' + "".join(parts) + "</svg>"
+    return svg, anchors
+
+
+def test_strokes_become_strokes():
+    """Lines of even width come back as stroked centrelines, not pairs of outlines."""
+    rng = random.Random(31)
+    for _ in range(4):
+        svg, anchors = _stroke_scene(rng)
+        source = _rasterise(svg, "white").astype(np.uint8)
+        buffer = io.BytesIO()
+        Image.fromarray(source).save(buffer, format="PNG")
+        buffer.seek(0)
+        result = vectorize_v2(buffer)
+        strokes = result.svg.count("stroke-width")
+        assert strokes >= 3, f"only {strokes} of 4 lines came back as strokes"
+        assert result.path_segment_count <= 2 * anchors, f"{result.path_segment_count} anchors vs {anchors} drawn"
+        error = float(np.abs(_rasterise(result.svg, "white") - source.astype(np.int16)).mean())
+        assert error < 1.0, f"mean error {error:.2f}"
+
+
+def _speckled(count, seed=9):
+    """A field of small random-coloured specks: texture, not shapes."""
+    from PIL import ImageDraw, ImageFilter
+
+    rng = random.Random(seed)
+    image = Image.new("RGB", (WIDTH, HEIGHT), "#d8c9a8")
+    draw = ImageDraw.Draw(image)
+    for _ in range(count):
+        x, y, radius = rng.uniform(0, WIDTH), rng.uniform(0, HEIGHT), rng.uniform(1, 4)
+        draw.ellipse((x - radius, y - radius * rng.uniform(0.4, 1), x + radius, y + radius), fill=_colour(rng))
+    buffer = io.BytesIO()
+    image.filter(ImageFilter.GaussianBlur(0.6)).save(buffer, format="PNG")
+    buffer.seek(0)
+    return buffer
+
+
+def test_texture_traced_loosely_with_a_note():
+    """Dense texture is traced with less effort and says so; flat artwork never is."""
+    result = vectorize_v2(_speckled(3000))
+    assert any("textured" in note for note in result.notes), result.notes
+    for seed in SEEDS[:4]:
+        _, flat = _trace(seed)
+        assert not any("textured" in note for note in flat.notes), f"seed {seed}: {flat.notes}"
+
+
 JPEG_GUARD = 5.0  # today's level; the target is 2.0 — see docs/APPROACH.md, known gaps
 
 
@@ -332,9 +404,7 @@ def test_jpeg_close_to_png():
         assert anchors["JPEG"] <= JPEG_GUARD * anchors["PNG"] + 10, f"seed {seed}: {anchors}"
 
 
-KNOWN_LIMITS = {
-    "24-line-art.png": "strokes are traced as filled outlines, not centrelines",
-}
+KNOWN_LIMITS = {}  # fixture name -> reason it's excluded; empty while every fixture passes
 
 
 def test_ground_truth_regression():

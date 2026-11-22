@@ -18,6 +18,8 @@ Two details matter as much as the search:
   and guessing one costs extra anchors.
 """
 
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
@@ -110,6 +112,48 @@ def _tangent(points, lengths, index, window):
         direction = points[min(index + 1, len(points) - 1)] - points[max(index - 1, 0)]
         norm = max(np.hypot(direction[0], direction[1]), 1e-12)
     return direction / norm
+
+
+_TANGENT_REACH = 12  # indices either side gathered for a tangent; covers the window at the densest contour
+
+
+def _tangents(points, lengths, indices, window):
+    """`_tangent` for many indices at once: the same quadratic regression, solved in a batch."""
+    indices = np.asarray(indices, dtype=np.int64)
+    if len(indices) == 0:
+        return np.zeros((0, 2))
+    count = len(points)
+    around = indices[:, None] + np.arange(-_TANGENT_REACH, _TANGENT_REACH + 1)[None, :]
+    inside = (around >= 0) & (around < count)
+    clipped = np.clip(around, 0, count - 1)
+    offset = lengths[clipped] - lengths[indices][:, None]
+    weight = (inside & (np.abs(offset) <= window)).astype(np.float64)
+
+    # Too few points in the window: fall back to two either side, as `_tangent` does.
+    few = weight.sum(axis=1) < 3
+    if few.any():
+        near = np.abs(around[few] - indices[few, None]) <= 2
+        weight[few] = (inside[few] & near).astype(np.float64)
+
+    powers = np.stack([np.ones_like(offset), offset, offset * offset], axis=-1)
+    normal = np.einsum("kn,kni,knj->kij", weight, powers, powers)
+    right = np.einsum("kn,kni,knd->kid", weight, powers, points[clipped])
+    spread = np.where(weight > 0, offset, np.nan)
+    usable = (weight.sum(axis=1) >= 3) & (np.nanmax(spread, axis=1) - np.nanmin(spread, axis=1) > 1e-9)
+    direction = np.zeros((len(indices), 2))
+    # A window reaching past the gathered points would need more of them: leave those to `_tangent`.
+    beyond = (weight[:, 0] > 0) | (weight[:, -1] > 0)
+    solvable = usable & ~beyond & (np.abs(np.linalg.det(normal)) > 1e-12)
+    if solvable.any():
+        direction[solvable] = np.linalg.solve(normal[solvable], right[solvable])[:, 1, :]
+    for row in np.flatnonzero(~solvable):
+        direction[row] = _tangent(points, lengths, int(indices[row]), window)
+    norm = np.hypot(direction[:, 0], direction[:, 1])
+    flat = norm < 1e-12
+    for row in np.flatnonzero(flat):
+        direction[row] = _tangent(points, lengths, int(indices[row]), window)
+    norm = np.hypot(direction[:, 0], direction[:, 1])
+    return direction / np.maximum(norm, 1e-12)[:, None]
 
 
 # ---------------------------------------------------------------- corners
@@ -404,9 +448,7 @@ def _open_run(loop, points, settings):
         run.segments = _polygon(points, candidates)
     else:
         lengths, _ = _cumulative_length(points, closed=False)
-        run.tangents = np.array(
-            [_tangent(points, lengths, index, settings.tangent_window) for index in candidates]
-        )
+        run.tangents = _tangents(points, lengths, candidates, settings.tangent_window)
     return run
 
 
@@ -434,9 +476,7 @@ def _smooth_runs(loop, points, settings):
                 rolled_lengths[1 : pad + 1] + perimeter,
             )
         )
-        tangents = np.array(
-            [_tangent(wrapped, wrapped_lengths, index + pad, settings.tangent_window) for index in candidates]
-        )
+        tangents = _tangents(wrapped, wrapped_lengths, np.asarray(candidates) + pad, settings.tangent_window)
         tangents[-1] = tangents[0]
         run.tangents = tangents
         runs.append(run)
@@ -471,6 +511,23 @@ def _prepare(loop, points, settings):
 # ---------------------------------------------------------------- batched fitting
 
 _CHUNK = 4096
+# The dense check builds points x polyline-segments arrays per span; smaller batches keep
+# several of them, side by side on threads, within memory.
+_VERIFY_CHUNK = 512
+
+
+THREADS = None  # None: one per core. Worker processes set 1.
+
+
+def parallel_map(function, items):
+    """map() across threads. The batches are large numpy operations, which release the
+    interpreter lock, so threads run them side by side; results keep their order."""
+    items = list(items)
+    workers = min(len(items), THREADS or os.cpu_count() or 1)
+    if workers <= 1:
+        return [function(item) for item in items]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(function, items))
 
 
 def _enumerate_spans(run, settings):
@@ -526,32 +583,30 @@ def _build_tables(runs, settings):
     global_first, global_last = np.concatenate(parts["global_first"]), np.concatenate(parts["global_last"])
     tangent_out, tangent_in = np.concatenate(parts["out"]), np.concatenate(parts["in"])
 
-    scale = settings.tolerance * settings.tolerance
+    batches = []
     for free_start in (False, True):
         for free_end in (False, True):
             group = np.flatnonzero((starts_free == free_start) & (ends_free == free_end))
-            for start in range(0, len(group), _CHUNK):
-                chunk = group[start : start + _CHUNK]
-                worst, squared, kinds, control_1, control_2 = fit_spans(
-                    points,
-                    global_first[chunk],
-                    global_last[chunk],
-                    tangent_out[chunk],
-                    tangent_in[chunk],
-                    free_start,
-                    free_end,
-                    settings,
-                )
-                for row in np.flatnonzero(worst <= settings.tolerance):
-                    span = chunk[row]
-                    penalty = 1.0 + 1e-3 * squared[row] / (scale * settings.samples)
-                    penalty -= 1e-4 if kinds[row] == "line" else 0.0
-                    pending[owners[span]].table[(int(firsts[span]), int(lasts[span]))] = (
-                        penalty,
-                        kinds[row],
-                        control_1[row],
-                        control_2[row],
-                    )
+            batches.extend((group[start : start + _CHUNK], free_start, free_end) for start in range(0, len(group), _CHUNK))
+
+    def fit_batch(batch):
+        chunk, free_start, free_end = batch
+        return fit_spans(
+            points, global_first[chunk], global_last[chunk], tangent_out[chunk], tangent_in[chunk], free_start, free_end, settings
+        )
+
+    scale = settings.tolerance * settings.tolerance
+    for (chunk, _, _), (worst, squared, kinds, control_1, control_2) in zip(batches, parallel_map(fit_batch, batches)):
+        for row in np.flatnonzero(worst <= settings.tolerance):
+            span = chunk[row]
+            penalty = 1.0 + 1e-3 * squared[row] / (scale * settings.samples)
+            penalty -= 1e-4 if kinds[row] == "line" else 0.0
+            pending[owners[span]].table[(int(firsts[span]), int(lasts[span]))] = (
+                penalty,
+                kinds[row],
+                control_1[row],
+                control_2[row],
+            )
     return points
 
 
@@ -559,15 +614,17 @@ def _verify(checks, points, settings):
     """Dense check of chosen curves, all at once. Returns the (run, span) pairs that fail."""
     if not checks:
         return set()
-    failed = set()
-    for start in range(0, len(checks), _CHUNK):
-        chunk = checks[start : start + _CHUNK]
+    def errors(chunk):
         firsts = np.array([run.offset + run.candidates[span[0]] for run, span in chunk])
         lasts = np.array([run.offset + run.candidates[span[1]] for run, span in chunk])
         dense = _span_samples(points, firsts, lasts, settings.samples * 3)
         control_1 = np.array([run.table[span][2] for run, span in chunk])
         control_2 = np.array([run.table[span][3] for run, span in chunk])
-        error = _dense_error(dense, dense[:, 0, :], control_1, control_2, dense[:, -1, :])
+        return _dense_error(dense, dense[:, 0, :], control_1, control_2, dense[:, -1, :])
+
+    chunks = [checks[start : start + _VERIFY_CHUNK] for start in range(0, len(checks), _VERIFY_CHUNK)]
+    failed = set()
+    for chunk, error in zip(chunks, parallel_map(errors, chunks)):
         failed.update((id(run), span) for (run, span), value in zip(chunk, error) if value > settings.tolerance)
     return failed
 
@@ -739,3 +796,61 @@ def fit_loops(loops, settings):
 def fit_loop(points, settings):
     """Closed loop -> list of Segments, ending where it starts."""
     return fit_loops([points], settings)[0]
+
+
+def _open_corners(points, settings):
+    """Indices of sharp corners on an open polyline, ends excluded."""
+    lengths, total = _cumulative_length(points, closed=False)
+    window = min(settings.corner_window, total / 8.0)
+    if len(points) < 6 or window <= 0:
+        return np.zeros(0, dtype=np.int64)
+    back = np.clip(np.searchsorted(lengths, lengths - window), 0, len(points) - 1)
+    forward = np.clip(np.searchsorted(lengths, lengths + window), 0, len(points) - 1)
+    incoming = points - points[back]
+    outgoing = points[forward] - points
+    norms = np.linalg.norm(incoming, axis=1) * np.linalg.norm(outgoing, axis=1)
+    cosine = np.sum(incoming * outgoing, axis=1) / np.maximum(norms, 1e-12)
+    angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+    angle[(lengths < window) | (lengths > total - window) | (norms < 1e-12)] = 0.0
+
+    kept = []
+    for index in np.argsort(angle)[::-1]:
+        if angle[index] <= settings.corner_angle_degrees:
+            break
+        if kept and np.min(np.abs(lengths[index] - lengths[np.array(kept)])) < window * 1.5:
+            continue
+        kept.append(int(index))
+    return np.array(sorted(kept), dtype=np.int64)
+
+
+def _open_runs(chain, points, settings):
+    """An open polyline split at its corners, each corner moved to where its sides meet."""
+    points = _dedupe(np.asarray(points, dtype=np.float64))
+    if len(points) < 2:
+        return []
+    lengths, total = _cumulative_length(points, closed=False)
+    corners = _open_corners(points, settings)
+    breaks = [(points[0], 0.0, 0.0)]
+    stops = np.concatenate(([0.0], lengths[corners], [total]))
+    for position, index in enumerate(corners):
+        point, trim = _refine_corner(
+            points, lengths, int(index), stops[position + 1] - stops[position], stops[position + 2] - stops[position + 1], settings
+        )
+        if point is not None:
+            breaks.append((point, lengths[index], trim))
+    breaks.append((points[-1], total, 0.0))
+
+    runs = []
+    for (start, at_start, trim_start), (end, at_end, trim_end) in zip(breaks[:-1], breaks[1:]):
+        interior = points[(lengths > at_start + trim_start) & (lengths < at_end - trim_end)]
+        runs.append(_open_run(chain, np.vstack([start, interior, end]), settings))
+    return runs
+
+
+def fit_open(chains, settings):
+    """Fit open polylines, such as stroke centrelines. Returns one list of Segments per chain."""
+    prepared = [_open_runs(index, chain, settings) for index, chain in enumerate(chains)]
+    runs = [run for chain_runs in prepared for run in chain_runs]
+    points = _build_tables(runs, settings)
+    _solve(runs, points, settings)
+    return [[segment for run in chain_runs for segment in run.segments] for chain_runs in prepared]

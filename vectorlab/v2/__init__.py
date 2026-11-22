@@ -3,6 +3,7 @@
     decode (transparency composited over a key colour)
            → detect palette → blend-aware labels → partition (merge, never drop)
            → bands of one gradient grouped into a gradient-filled shape
+           → even-width lines found as stroked centrelines, painted last
            → paint order by enclosed area, holes filled
            → coverage field → marching squares → primitive or optimal spline
            → SVG, leaving out the key colour's regions
@@ -11,7 +12,7 @@ Every idea is a switch on V2Options so each one's contribution can be
 measured on its own.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from PIL import Image, ImageDraw
@@ -20,9 +21,19 @@ from ..metrics import count_editable_points
 from ..pipeline import VectorizeRejected, VectorizeResult
 from ..quantize import srgb_to_lab
 from .contour import coverage_field, signed_area, trace_loops
-from .emit import build_document, glow_element, gradient_element, path_data, primitive_element, to_hex
-from .fitting import FitSettings, fit_loops
+from .emit import (
+    build_document,
+    gradient_element,
+    open_path_data,
+    path_data,
+    primitive_element,
+    stroke_attributes,
+    to_hex,
+)
+from .fitting import FitSettings, fit_loops, fit_open
 from .gradients import merge_gradients
+from .parallel import Workers, worker_count
+from .strokes import Stroke, could_be_stroke, detect_stroke
 from .partition import force_clear, label_image, label_partition, partition_labels
 from .primitives import detect_primitive
 
@@ -63,6 +74,11 @@ class V2Options:
     use_occlusion: bool = True
     use_blend_labels: bool = True
     use_gradients: bool = True
+    use_strokes: bool = True
+    texture_safeguard: bool = True  # trace textured images faster and more loosely, with a note
+
+    # processes to trace with; 1 runs everything here, 0 one per core (see parallel.py)
+    workers: int = 1
 
 
 @dataclass
@@ -292,15 +308,18 @@ def _paint_rank(partition, canvas, options, clear_components):
     return order, rank
 
 
-def _shape_loops(partition, component, canvas, options):
-    """Traced loops for one component, in image coordinates."""
+def _shape_loops(partition, component, canvas, options, layered=True):
+    """Traced loops for one component, in image coordinates.
+
+    layered=False traces only its own pixels: no holes filled, nothing extended underneath.
+    """
     y0, x0 = partition.boxes[component][:2]
     rows, columns = canvas.crop(partition.boxes[component])
 
     component_crop = canvas.components[rows, columns]
     mask = component_crop == component
     hull_coverage = None
-    if options.use_stacking:
+    if options.use_stacking and layered:
         mask = _fill_holes(mask, canvas.clear[rows, columns])
         if options.use_occlusion and canvas.rank is not None:
             mask, hull_coverage = _occluded_extension(
@@ -324,7 +343,234 @@ def _shape_loops(partition, component, canvas, options):
     offset = np.array([x0 - _MARGIN - 0.5, y0 - _MARGIN - 0.5])
     # A sliver whose every pixel is under half covered traces to nothing visible.
     loops = [loop for loop in trace_loops(np.pad(coverage, 1)) if abs(signed_area(loop)) >= 0.5]
-    return [loop + offset for loop in loops], int(mask.sum())
+    return [loop + offset for loop in loops], mask
+
+
+def _stroke_for(partition, component, canvas, options):
+    """The component as a stroke, if it is one even-width line."""
+    rows, columns = canvas.crop(partition.boxes[component])
+    mask = canvas.components[rows, columns] == component
+    if not could_be_stroke(mask):
+        return None
+    y0, x0 = partition.boxes[component][:2]
+
+    def outline():
+        return _shape_loops(partition, component, canvas, options, layered=False)[0]
+
+    return detect_stroke(mask, np.array([x0 - _MARGIN, y0 - _MARGIN], dtype=np.float64), outline)
+
+
+def _stroke_task(context, component):
+    return _stroke_for(context["partition"], component, context["canvas"], context["options"])
+
+
+def _loops_task(context, component, rank):
+    canvas = context["canvas"]
+    canvas.rank = rank
+    return _shape_loops(context["partition"], component, canvas, context["options"])
+
+
+def _trace_shapes(partition, order, canvas, options, fills, workers):
+    """(component, loops, stroke) in paint order; exactly one of loops and stroke is set.
+
+    Strokes are painted last, the way outlines are drawn over their fills.
+    That lets every shape a stroke borders extend underneath it, so no
+    background shows through the antialiased seam between them.
+
+    A shape whose pixels already show its own flat colour, from a shape
+    painted earlier, is left out: the inside of an outline drawn as a
+    stroke is the background showing through.
+    """
+    strokes = {}
+    if options.use_strokes:
+        candidates = [component for component in order if fills[component] is None]
+        found = workers.map(_stroke_task, candidates)
+        strokes = {component: stroke for component, stroke in zip(candidates, found) if stroke is not None}
+    if strokes:
+        order = [c for c in order if c not in strokes] + [c for c in order if c in strokes]
+        canvas.rank[np.array(order, dtype=np.int64)] = np.arange(len(order))
+    filled = [component for component in order if component not in strokes]
+    traced = dict(zip(filled, workers.map(_loops_task, filled, canvas.rank)))
+
+    shapes = []
+    on_top = np.full(canvas.components.shape, -1, dtype=np.int64)
+    gradient = np.array([fill is not None for fill in fills], dtype=bool)
+    for component in order:
+        rows, columns = canvas.crop(partition.boxes[component])
+        own = canvas.components[rows, columns] == component
+        if _already_shown(component, own, on_top[rows, columns], partition.component_label, gradient):
+            continue
+        stroke = strokes.get(component)
+        if stroke is not None:
+            shapes.append((component, None, stroke))
+            painted = own
+        else:
+            loops, painted = traced[component]
+            if not loops:
+                continue
+            shapes.append((component, loops, None))
+        on_top[rows, columns][painted] = component
+    return shapes
+
+
+def _already_shown(component, own, beneath, labels, gradient):
+    """True if what's painted under this shape's interior is all its own flat colour."""
+    if gradient[component]:
+        return False
+    padded = np.pad(own, 1, constant_values=False)
+    inner = own & padded[:-2, 1:-1] & padded[2:, 1:-1] & padded[1:-1, :-2] & padded[1:-1, 2:]
+    below = beneath[inner if inner.any() else own]
+    if not len(below) or (below < 0).any():
+        return False
+    same = (labels[below] == labels[component]) & ~gradient[below]
+    return bool(same.mean() >= 0.99)
+
+
+@dataclass
+class _Planned:
+    component: int
+    primitive: object = None  # a filled primitive
+    loops: tuple = None  # (start, count) into the fitted loops
+    stroke: Stroke = None
+    chains: tuple = None  # (start, count) into the fitted open chains
+    rings: list = None  # per closed centreline: a primitive or an index into the fitted loops
+
+
+def _primitive_or_none(loop, options):
+    return detect_primitive(loop, options.tolerance) if options.use_primitives else None
+
+
+def _fit_task(context, loops, settings):
+    return fit_loops(loops, settings)
+
+
+def _fit_closed(loops, settings, workers, min_points=60000):
+    """fit_loops, split into chunks of about equal size across workers when there's enough to fit."""
+    total = sum(len(loop) for loop in loops)
+    if workers.count <= 1 or total < min_points:
+        return fit_loops(loops, settings)
+    chunks, chunk, size = [], [], 0
+    target = total / (workers.count * 4)
+    for loop in loops:
+        chunk.append(loop)
+        size += len(loop)
+        if size >= target:
+            chunks.append(chunk)
+            chunk, size = [], 0
+    if chunk:
+        chunks.append(chunk)
+    return [fitted for result in workers.map(_fit_task, chunks, settings, force=True) for fitted in result]
+
+
+def _fit_shapes(shapes, options, settings, workers):
+    """Primitives where they fit, and every other contour fitted in one shared batch."""
+    plan, closed, open_chains = [], [], []
+    for component, loops, stroke in shapes:
+        if stroke is not None:
+            rings = []
+            for ring in stroke.loops:
+                primitive = _primitive_or_none(ring, options)
+                rings.append(primitive if primitive is not None else len(closed))
+                if primitive is None:
+                    closed.append(ring)
+            plan.append(_Planned(component, stroke=stroke, chains=(len(open_chains), len(stroke.chains)), rings=rings))
+            open_chains.extend(stroke.chains)
+            continue
+        primitive = _primitive_or_none(loops[0], options) if len(loops) == 1 else None
+        if primitive is not None:
+            plan.append(_Planned(component, primitive=primitive))
+        else:
+            plan.append(_Planned(component, loops=(len(closed), len(loops))))
+            closed.extend(loops)
+
+    fitted_closed = _fit_closed(closed, settings, workers)
+    fitted_open = fit_open(open_chains, settings) if open_chains else []
+    for item in plan:
+        if item.loops is not None:
+            start, count = item.loops
+            item.loops = fitted_closed[start : start + count]
+        if item.stroke is not None:
+            start, count = item.chains
+            item.chains = fitted_open[start : start + count]
+            item.rings = [ring if not isinstance(ring, int) else fitted_closed[ring] for ring in item.rings]
+    return plan
+
+
+class _Writer:
+    """SVG elements for planned shapes, with the gradients they use."""
+
+    def __init__(self, partition, fills, scale):
+        self.partition, self.fills, self.scale = partition, fills, scale
+        self.elements, self.defs, self.flat_colours = [], [], []
+
+    def _gradient_url(self, gradient):
+        ident = f"g{len(self.defs) + 1}"
+        self.defs.append(gradient_element(gradient, ident, self.scale))
+        return f"url(#{ident})"
+
+    def _colour(self, component):
+        colour = to_hex(self.partition.palette[self.partition.component_label[component]])
+        if colour not in self.flat_colours:
+            self.flat_colours.append(colour)
+        return colour
+
+    def add(self, item):
+        if item.stroke is not None:
+            self._add_stroke(item)
+            return
+        gradient_fill = self.fills[item.component]
+        fill = self._gradient_url(gradient_fill.base) if gradient_fill is not None else self._colour(item.component)
+        shape = self._shape_markup(item, fill)
+        if shape is None:
+            return
+        if gradient_fill is None or not gradient_fill.overlays:
+            self.elements.append(shape)
+            return
+        # A glow is painted inside its own shape only: the shape is defined once, then drawn
+        # with the base gradient and again with each glow.
+        ident = f"s{len(self.defs) + 1}"
+        self.defs.append(shape.replace(f' fill="{fill}"', f' id="{ident}"', 1))
+        self.elements.append(f'<use href="#{ident}" fill="{fill}"/>')
+        for glow in gradient_fill.overlays:
+            self.elements.append(f'<use href="#{ident}" fill="{self._gradient_url(glow)}"/>')
+
+    def _shape_markup(self, item, fill):
+        if item.primitive is not None:
+            return primitive_element(item.primitive, fill, self.scale)
+        data = path_data(item.loops, self.scale)
+        if not data:
+            return None
+        rule = ' fill-rule="evenodd"' if len(item.loops) > 1 else ""
+        return f'<path d="{data}" fill="{fill}"{rule}/>'
+
+    def _add_stroke(self, item):
+        colour = self._colour(item.component)
+        paint = stroke_attributes(colour, item.stroke.width, self.scale, item.stroke.cap)
+        fitted_rings = [ring for ring in item.rings if isinstance(ring, list)]
+        data = open_path_data(item.chains, self.scale) + path_data(fitted_rings, self.scale)
+        if data:
+            self.elements.append(f'<path d="{data}" {paint}/>')
+        for ring in item.rings:
+            if not isinstance(ring, list):
+                self.elements.append(primitive_element(ring, colour, self.scale, paint))
+
+
+_TEXTURE_NOISE = 1.5  # neighbouring pixels differ this much (ΔE) even inside regions...
+_TEXTURE_SPECKS = 0.3  # ...and this share of the image is in regions under 200 pixels
+
+
+def _speck_share(partition):
+    """Share of the image in regions under 200 pixels: high for brushwork, engraving and mosaic,
+    where there's detail everywhere rather than flat shapes."""
+    areas = partition.areas
+    return float(areas[areas < 200].sum()) / max(1, int(areas.sum()))
+
+
+def _texture_options(options):
+    """Less work for an image that can only be traced approximately anyway: gradients and lines
+    aren't searched for among its specks, and curves may stray further."""
+    fit = replace(options.fit, candidate_tolerance=max(options.fit.candidate_tolerance, 0.8))
+    return replace(options, use_gradients=False, use_strokes=False, tolerance=max(options.tolerance, 1.0), fit=fit)
 
 
 def _partition_within_budget(labelling, view, options):
@@ -333,21 +579,27 @@ def _partition_within_budget(labelling, view, options):
     A detailed illustration can legitimately exceed the budget, and the
     useful answer is a slightly simpler trace that says so. Only input that
     stays over budget even when coarsened hard — pure noise — is refused.
+
+    Returns (partition, notes, speck share of the first, uncoarsened pass).
     """
     if labelling.raw_noise > options.max_noise:
         raise VectorizeRejected(
             f"input is mostly noise (level {labelling.raw_noise:.0f}) — there is no structure to trace", 0
         )
     scale = 1.0
+    partition = None
     for _ in range(7):
-        partition = partition_labels(labelling, view, scale)
+        # Each coarser pass carries on from the last one's merges.
+        partition = partition_labels(labelling, view, scale, None if partition is None else partition.label_map)
+        if scale == 1.0:
+            specks = _speck_share(partition)
         count = len(partition.areas)
         if count <= options.max_regions:
             notes = ()
             if scale > 1.0:
                 notes = (f"simplified to fit the {options.max_regions}-region budget "
                          f"(smallest regions merged at {scale:.0f}× the usual size)",)
-            return partition, notes
+            return partition, notes, specks
         scale *= 2.0
     raise VectorizeRejected(
         f"input still produced {count} regions after coarsening — too noisy to trace", count
@@ -366,10 +618,14 @@ def vectorize_v2(path_or_file, options=None):
     view.key_colour = source.key
     labelling = label_image(source.rgb, view)
     clear_index = force_clear(labelling, source.alpha, source.key) if source.key is not None else None
-    partition, notes = _partition_within_budget(labelling, view, options)
+    partition, notes, specks = _partition_within_budget(labelling, view, options)
+    if options.texture_safeguard and labelling.raw_noise >= _TEXTURE_NOISE and specks >= _TEXTURE_SPECKS:
+        options = _texture_options(options)
+        notes = notes + ("textured image: traced approximately, with looser curves and no gradient or line search",)
     fills = [None] * len(partition.areas)
     if options.use_gradients:
-        partition, fills = merge_gradients(partition, labelling.image, labelling.image_lab, clear_index)
+        with Workers(worker_count(options.workers), None) as workers:
+            partition, fills = merge_gradients(partition, labelling.image, labelling.image_lab, clear_index, workers)
 
     settings = FitSettings(**{**options.fit.__dict__, "tolerance": options.tolerance})
     settings.greedy = not options.use_optimal_fit
@@ -378,56 +634,15 @@ def vectorize_v2(path_or_file, options=None):
     clear_components = partition.component_label == (clear_index if clear_index is not None else -1)
     order, canvas.rank = _paint_rank(partition, canvas, options, clear_components)
 
-    shapes = []
-    for component in order:
-        loops, _ = _shape_loops(partition, component, canvas, options)
-        if loops:
-            shapes.append((component, loops))
-
+    with Workers(worker_count(options.workers), {"partition": partition, "canvas": canvas, "options": options}) as workers:
+        shapes = _trace_shapes(partition, order, canvas, options, fills, workers)
+        plan = _fit_shapes(shapes, options, settings, workers)
     inverse = 1.0 / scale
-    plan = []
-    to_fit = []
-    for component, loops in shapes:
-        primitive = None
-        if options.use_primitives and len(loops) == 1:
-            primitive = detect_primitive(loops[0], options.tolerance)
-        if primitive is not None:
-            plan.append((component, primitive, None))
-        else:
-            plan.append((component, None, (len(to_fit), len(loops))))
-            to_fit.extend(loops)
+    writer = _Writer(partition, fills, inverse)
+    for item in plan:
+        writer.add(item)
 
-    # Every contour in the image is fitted in one shared batch.
-    fitted_all = fit_loops(to_fit, settings)
-
-    elements = []
-    defs = []
-    flat_colours = []
-
-    def gradient_url(gradient):
-        ident = f"g{len(defs) + 1}"
-        defs.append(gradient_element(gradient, ident, inverse))
-        return f"url(#{ident})"
-
-    for component, primitive, span in plan:
-        gradient_fill = fills[component]
-        fill = to_hex(partition.palette[partition.component_label[component]])
-        if gradient_fill is not None:
-            fill = gradient_url(gradient_fill.base)
-        elif fill not in flat_colours:
-            flat_colours.append(fill)
-        if primitive is not None:
-            elements.append(primitive_element(primitive, fill, inverse))
-        else:
-            start, count = span
-            fitted = fitted_all[start : start + count]
-            data = path_data(fitted, inverse)
-            if data:
-                rule = ' fill-rule="evenodd"' if len(fitted) > 1 else ""
-                elements.append(f'<path d="{data}" fill="{fill}"{rule}/>')
-        for glow in gradient_fill.overlays if gradient_fill is not None else ():
-            elements.append(glow_element(glow, gradient_url(glow), inverse))
-
+    elements, defs, flat_colours = writer.elements, writer.defs, writer.flat_colours
     document = build_document(elements, round(width * inverse), round(height * inverse), defs)
     counts = count_editable_points(document)
     return VectorizeResult(

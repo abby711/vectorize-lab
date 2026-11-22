@@ -33,6 +33,14 @@ def srgb_to_lab(rgb):
     return lab
 
 
+def squared_distances(points, centres):
+    """(n, k) squared distances, by ||p||^2 - 2 p.c + ||c||^2: a matrix product instead of an
+    (n, k, 3) difference array."""
+    return np.maximum(
+        (points * points).sum(axis=1)[:, None] - 2.0 * points @ centres.T + (centres * centres).sum(axis=1)[None, :], 0.0
+    )
+
+
 def _kmeans_plus_plus_init(points, k, rng):
     centers = [points[rng.integers(len(points))]]
     closest = np.sum((points - centers[0]) ** 2, axis=1)
@@ -61,19 +69,15 @@ def _kmeans(points, k, iterations, rng):
     for _ in range(iterations):
         # Chunked distance computation keeps peak memory bounded.
         for start in range(0, len(points), 65536):
-            chunk = points[start : start + 65536]
-            distances = np.sum((chunk[:, None, :] - centers[None, :, :]) ** 2, axis=2)
-            labels[start : start + 65536] = np.argmin(distances, axis=1)
+            labels[start : start + 65536] = np.argmin(squared_distances(points[start : start + 65536], centers), axis=1)
 
-        moved = False
-        for index in range(k):
-            members = points[labels == index]
-            if len(members) == 0:
-                continue
-            mean = members.mean(axis=0)
-            if not np.allclose(mean, centers[index], atol=1e-4):
-                moved = True
-            centers[index] = mean
+        # Every cluster's mean at once; an empty cluster keeps its centre.
+        sizes = np.bincount(labels, minlength=k)
+        sums = np.stack([np.bincount(labels, weights=points[:, c], minlength=k) for c in range(points.shape[1])], axis=1)
+        occupied = sizes > 0
+        means = sums[occupied] / sizes[occupied][:, None]
+        moved = not np.allclose(means, centers[occupied], atol=1e-4)
+        centers[occupied] = means
 
         if not moved:
             break
@@ -84,23 +88,27 @@ def _kmeans(points, k, iterations, rng):
 def quantize_full_color(rgb, color_count, sample_limit=40000, seed=7):
     """rgb: uint8 (h, w, 3). Returns (label_map int32, palette uint8 (k,3))."""
     height, width = rgb.shape[:2]
-    flat = rgb.reshape(-1, 3).astype(np.float64) / 255.0
-    lab = srgb_to_lab(flat)
+    flat = rgb.reshape(-1, 3)
+    # Each distinct colour is converted and assigned once; pixels look theirs up.
+    keys = (flat[:, 0].astype(np.int32) << 16) | (flat[:, 1].astype(np.int32) << 8) | flat[:, 2]
+    unique_keys, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
+    inverse = inverse.ravel()
+    colours = np.stack([(unique_keys >> 16) & 255, (unique_keys >> 8) & 255, unique_keys & 255], axis=1) / 255.0
+    colour_lab = srgb_to_lab(colours)
 
     rng = np.random.default_rng(seed)
-    if len(lab) > sample_limit:
-        sample_index = rng.choice(len(lab), sample_limit, replace=False)
-        sample = lab[sample_index]
+    if len(flat) > sample_limit:
+        sample_index = rng.choice(len(flat), sample_limit, replace=False)
+        sample = colour_lab[inverse[sample_index]]
     else:
-        sample = lab
+        sample = colour_lab[inverse]
 
     centers, _ = _kmeans(sample, color_count, iterations=24, rng=rng)
 
-    labels = np.zeros(len(lab), dtype=np.int32)
-    for start in range(0, len(lab), 65536):
-        chunk = lab[start : start + 65536]
-        distances = np.sum((chunk[:, None, :] - centers[None, :, :]) ** 2, axis=2)
-        labels[start : start + 65536] = np.argmin(distances, axis=1)
+    colour_labels = np.zeros(len(colour_lab), dtype=np.int32)
+    for start in range(0, len(colour_lab), 65536):
+        colour_labels[start : start + 65536] = np.argmin(squared_distances(colour_lab[start : start + 65536], centers), axis=1)
+    labels = colour_labels[inverse]
 
     # Empty clusters are dropped and the labels renumbered, so the palette
     # never reports a colour that no pixel actually uses.
@@ -110,10 +118,12 @@ def quantize_full_color(rgb, color_count, sample_limit=40000, seed=7):
 
     # Palette in sRGB: mean of the actual pixels assigned to each center,
     # which reads truer than converting the Lab centroid back.
-    palette = np.zeros((len(used), 3), dtype=np.uint8)
-    for position, index in enumerate(used):
-        members = flat[labels == index]
-        palette[position] = np.clip(members.mean(axis=0) * 255.0, 0, 255).astype(np.uint8)
+    members = np.bincount(colour_labels, weights=counts, minlength=len(centers))
+    sums = np.stack(
+        [np.bincount(colour_labels, weights=colours[:, c] * counts, minlength=len(centers)) for c in range(3)], axis=1
+    )
+    means = sums[used] / members[used][:, None]
+    palette = np.clip(means * 255.0, 0, 255).astype(np.uint8)
 
     return remap[labels].reshape(height, width), palette
 

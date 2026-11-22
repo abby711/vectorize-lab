@@ -94,29 +94,30 @@ def coverage_field(inside, labels, colours, palette, report=False):
         columns = slice(1 + dx, padded_inside.shape[1] - 1 + dx)
         neighbours.append((padded_inside[rows, columns], padded_labels[rows, columns]))
 
-    own_colour = palette[np.clip(labels, 0, None)]
+    own_label = np.clip(labels, 0, None)
     best_in = np.full(inside.shape, np.inf)
     mix_in = np.ones(inside.shape)
     best_out = np.full(inside.shape, np.inf)
     mix_out = np.zeros(inside.shape)
 
+    # Only pixels on the boundary get a coverage, so only they are unmixed.
     for neighbour_inside, neighbour_label in neighbours:
         valid = neighbour_label >= 0
-        neighbour_colour = palette[np.clip(neighbour_label, 0, None)]
-
-        # Inside pixel facing outward: blend of its own colour and the neighbour's.
-        facing_out = inside & ~neighbour_inside & valid & in_image
-        mix, residual = _unmix(colours, own_colour, neighbour_colour)
-        better = facing_out & (residual < best_in)
-        best_in[better] = residual[better]
-        mix_in[better] = mix[better]
-
-        # Outside pixel facing inward: blend of the neighbour's colour and its own.
-        facing_in = ~inside & neighbour_inside & valid & in_image
-        mix, residual = _unmix(colours, neighbour_colour, own_colour)
-        better = facing_in & (residual < best_out)
-        best_out[better] = residual[better]
-        mix_out[better] = mix[better]
+        for facing, best, mixes, outward in (
+            (inside & ~neighbour_inside & valid & in_image, best_in, mix_in, True),
+            (~inside & neighbour_inside & valid & in_image, best_out, mix_out, False),
+        ):
+            rows, columns = np.nonzero(facing)
+            if not len(rows):
+                continue
+            own = palette[own_label[rows, columns]]
+            other = palette[np.clip(neighbour_label[rows, columns], 0, None)]
+            # Facing out: a blend of its own colour and the neighbour's; facing in, the reverse.
+            first, second = (own, other) if outward else (other, own)
+            mix, residual = _unmix(colours[rows, columns], first, second)
+            better = residual < best[rows, columns]
+            best[rows[better], columns[better]] = residual[better]
+            mixes[rows[better], columns[better]] = mix[better]
 
     inner = np.isfinite(best_in)
     outer = np.isfinite(best_out)

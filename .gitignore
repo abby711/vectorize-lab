@@ -30,3 +30,8 @@ dataset/mYb0*
 dataset/external/
 dataset/vector_image_to_vector_benchmark/assets/
 samples/external/
+
+# packaging
+build/
+dist/
+*.egg-info/

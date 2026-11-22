@@ -29,9 +29,12 @@ _INLIER_ERROR = 3.0
 _MIN_AREA = 64
 _MIN_LAYERED = 1500
 _MIN_SPLIT_AREA = 1000
+_MIN_PARALLEL_GROUPS = 40  # fewer soft groups than this are explored here, not sent to workers
 _MIN_RADIAL = 400
 _SAMPLE = 20000
 _SEARCH_SAMPLE = 3000
+_QUICK_SAMPLE = 400  # a first fit, enough to tell a hopeless group
+_HOPELESS = 1.6  # ...when its error is this many times what a gradient may have
 _BINS = 64
 _STOP_TOLERANCE = 3.0  # sRGB levels
 _MAX_STOPS = 8
@@ -147,7 +150,7 @@ def _connected(members, linked):
 def _binned(position, values, robust):
     """Per-bin centre and median (or mean) value along position in [0, 1]."""
     bins = np.minimum((np.clip(position, 0.0, 1.0) * _BINS).astype(np.int64), _BINS - 1)
-    filled = np.unique(bins)
+    filled = np.flatnonzero(np.bincount(bins, minlength=_BINS))
     if robust:
         summary = np.empty((len(filled), values.shape[1]))
         for channel in range(values.shape[1]):
@@ -246,15 +249,31 @@ def _radial_at(points, colours, centre, robust):
     return Gradient("radial", (centre[0], centre[1], high), stops)
 
 
+def _ramp_score(t, colours, lab, robust):
+    """Mean error of the ramp along t that best fits the colours, before it's cut down to a
+    few stops: a cheap way to compare one direction or centre with another."""
+    low, high = float(t.min()), float(t.max())
+    position = (t - low) / max(high - low, 1e-9)
+    centres, means = _binned(position, colours, robust)
+    if len(centres) == 1:
+        predicted = np.broadcast_to(means[0], colours.shape)
+    else:
+        predicted = np.stack([np.interp(position, centres, means[:, c]) for c in range(3)], axis=1)
+    if lab is None:
+        # Ranking candidates needs no perceptual scale, and RGB distance is far cheaper.
+        return float(np.linalg.norm(predicted - colours, axis=1).mean())
+    return float(_error(predicted, lab).mean())
+
+
 def _scored(gradient, points, lab):
     return gradient, _error(paint(GradientFill(gradient), points), lab)
 
 
-def _few(count):
+def _few(count, limit=_SEARCH_SAMPLE):
     """A fixed subsample for searches; the chosen fit is redone on every point."""
-    if count <= _SEARCH_SAMPLE:
+    if count <= limit:
         return np.arange(count)
-    return np.sort(np.random.default_rng(5).choice(count, _SEARCH_SAMPLE, replace=False))
+    return np.sort(np.random.default_rng(5).choice(count, limit, replace=False))
 
 
 def _fit_linear(points, colours, lab, robust=False):
@@ -263,9 +282,10 @@ def _fit_linear(points, colours, lab, robust=False):
     _, _, right = np.linalg.svd(coefficients[:2].T)
     base = float(np.arctan2(right[0, 1], right[0, 0]))
     few = _few(len(points))
+    centred = points[few] - points[few].mean(axis=0)
 
     def score(angle):
-        return float(_scored(_linear_at(points[few], colours[few], angle, robust), points[few], lab[few])[1].mean())
+        return _ramp_score(centred @ np.array([np.cos(angle), np.sin(angle)]), colours[few], None, robust)
 
     angle = min((base + step for step in np.radians(np.arange(-8, 9, 2))), key=score)
     return _scored(_linear_at(points, colours, angle, robust), points, lab)
@@ -303,11 +323,12 @@ def _fit_radial(points, colours, lab, robust=False):
 
     few = _few(len(points))
 
-    def score(centre):
-        return float(_scored(_radial_at(points[few], colours[few], centre, robust), points[few], lab[few])[1].mean())
+    def score(centre, perceptual=False):
+        radius = np.hypot(points[few, 0] - centre[0], points[few, 1] - centre[1])
+        return _ramp_score(radius, colours[few], lab[few] if perceptual else None, robust)
 
     # The search only refines the centre; one far off at the start won't come good.
-    if score(start) > 4.0 * _MAX_MEAN_ERROR:
+    if score(start, perceptual=True) > 4.0 * _MAX_MEAN_ERROR:
         return None
     return _scored(_radial_at(points, colours, _search_centre(score, start, span), robust), points, lab)
 
@@ -315,9 +336,21 @@ def _fit_radial(points, colours, lab, robust=False):
 def _fit_single(points, colours, lab, robust=False, radial=True):
     """Best of linear and radial; radial must earn its extra freedom.
 
-    Small regions skip the radial search: over a few hundred pixels the
-    two look alike, and small soft regions are numerous in detailed art.
+    Most groups of bands in detailed art are no gradient at all. A fit to a
+    small sample shows that, and the full search is spent only on the rest.
     """
+    if not robust and len(points) > 2 * _QUICK_SAMPLE:
+        quick = _few(len(points), _QUICK_SAMPLE)
+        gradient, _ = _search_single(points[quick], colours[quick], lab[quick], robust, radial)
+        error = _error(paint(GradientFill(gradient), points), lab)
+        if float(error.mean()) > _HOPELESS * _MAX_MEAN_ERROR:
+            return gradient, error
+    return _search_single(points, colours, lab, robust, radial)
+
+
+def _search_single(points, colours, lab, robust, radial):
+    """Small regions skip the radial search: over a few hundred pixels the
+    two look alike, and small soft regions are numerous in detailed art."""
     linear = _fit_linear(points, colours, lab, robust)
     if _acceptable(linear[1]) or not radial or len(points) < _MIN_RADIAL:
         return linear
@@ -459,6 +492,13 @@ class _Pixels:
         self.rgb = rgb[rows, columns].astype(np.float64)
         self.lab = image_lab[rows, columns]
 
+    def subset(self, members):
+        """The pixels of these components only, in the same order."""
+        part = _Pixels.__new__(_Pixels)
+        keep = np.isin(self.owner, list(members))
+        part.owner, part.points, part.rgb, part.lab = self.owner[keep], self.points[keep], self.rgb[keep], self.lab[keep]
+        return part
+
     def select(self, members):
         chosen = np.flatnonzero(np.isin(self.owner, list(members)))
         if len(chosen) > _SAMPLE:
@@ -533,8 +573,15 @@ def _halves(group, centres, areas):
     return set(members[order[:cut]].tolist()), set(members[order[cut:]].tolist())
 
 
-def find_gradients(partition, rgb, image_lab, excluded_label=None):
-    """Groups of components that are one gradient. Returns [(members, GradientFill)]."""
+def _explore_task(context, payload):
+    return _explore(*payload)
+
+
+def find_gradients(partition, rgb, image_lab, excluded_label=None, workers=None):
+    """Groups of components that are one gradient. Returns [(members, GradientFill)].
+
+    workers (a parallel.Workers) explores groups on several cores when there are enough of them.
+    """
     pairs = soft_pairs(partition, image_lab, excluded_label)
     if not len(pairs):
         return []
@@ -542,21 +589,35 @@ def find_gradients(partition, rgb, image_lab, excluded_label=None):
     pixels = _Pixels(partition.component_map, rgb, image_lab)
 
     centres = _centres(partition.component_map, len(partition.areas))
-    found = []
-    queue = [part for part in _connected({int(node) for node in np.unique(pairs)}, linked) if len(part) >= 2]
-    while queue:
-        group = queue.pop()
-        if int(partition.areas[list(group)].sum()) < _MIN_AREA:
+    groups = [part for part in _connected({int(node) for node in np.unique(pairs)}, linked) if len(part) >= 2]
+
+    # Groups are independent; the last is explored first, as a stack would.
+    groups = groups[::-1]
+    if workers is None or workers.count <= 1 or len(groups) < _MIN_PARALLEL_GROUPS:
+        return [entry for group in groups for entry in _explore(group, pixels, linked, centres, partition.areas)]
+    payloads = [
+        (group, pixels.subset(group), {member: linked[member] & group for member in group}, centres, partition.areas)
+        for group in groups
+    ]
+    return [entry for found in workers.map(_explore_task, payloads, force=True) for entry in found]
+
+
+def _explore(group, pixels, linked, centres, areas):
+    """Every gradient in one soft group, trying halves where one gradient doesn't fit the whole."""
+    found, stack = [], [group]
+    while stack:
+        group = stack.pop()
+        if int(areas[list(group)].sum()) < _MIN_AREA:
             continue
         members, fill = _fit_group(group, pixels, linked)
         if members is None:
             # A field of several gradients: try each half on its own.
-            if len(group) >= 4 and int(partition.areas[list(group)].sum()) >= _MIN_SPLIT_AREA:
-                for half in _halves(group, centres, partition.areas):
-                    queue.extend(part for part in _connected(half, linked) if len(part) >= 2)
+            if len(group) >= 4 and int(areas[list(group)].sum()) >= _MIN_SPLIT_AREA:
+                for half in _halves(group, centres, areas):
+                    stack.extend(part for part in _connected(half, linked) if len(part) >= 2)
             continue
         found.append((members, fill))
-        queue.extend(part for part in _connected(group - members, linked) if len(part) >= 2)
+        stack.extend(part for part in _connected(group - members, linked) if len(part) >= 2)
     return found
 
 
@@ -618,12 +679,12 @@ def _fringes(partition, groups, rgb, image_lab):
     return owners
 
 
-def merge_gradients(partition, rgb, image_lab, excluded_label=None):
+def merge_gradients(partition, rgb, image_lab, excluded_label=None, workers=None):
     """Partition with each gradient group as one component, and the fill per component.
 
     fills[i] is None for a flat colour, or the GradientFill of component i.
     """
-    groups = find_gradients(partition, rgb, image_lab, excluded_label)
+    groups = find_gradients(partition, rgb, image_lab, excluded_label, workers)
     if not groups:
         return partition, [None] * len(partition.areas)
 

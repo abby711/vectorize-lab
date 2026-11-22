@@ -29,7 +29,28 @@ def path_data(loops, scale):
     return "".join(parts)
 
 
-def primitive_element(primitive, fill, scale):
+def open_path_data(chains, scale):
+    """chains: list of segment lists, each left open."""
+    return "".join(path_data([segments], scale)[:-1] for segments in chains if segments)
+
+
+def stroke_attributes(colour, width, scale, cap="round"):
+    join = "round" if cap == "round" else "miter"
+    return (
+        f'fill="none" stroke="{colour}" stroke-width="{_number(width * scale)}" '
+        f'stroke-linecap="{cap}" stroke-linejoin="{join}"'
+    )
+
+
+def primitive_element(primitive, fill, scale, paint=None):
+    """paint: attributes replacing fill="...", for a stroked primitive."""
+    element = _primitive_markup(primitive, fill, scale)
+    if paint:
+        element = element.replace(f'fill="{fill}"', paint)
+    return element
+
+
+def _primitive_markup(primitive, fill, scale):
     cx, cy = primitive.centre
     if primitive.kind == "circle":
         return (
@@ -74,12 +95,6 @@ def gradient_element(gradient, ident, scale):
         f'<radialGradient id="{ident}" gradientUnits="userSpaceOnUse" '
         f'cx="{cx}" cy="{cy}" r="{radius}">{stops}</radialGradient>'
     )
-
-
-def glow_element(gradient, fill, scale):
-    """The circle a fading radial gradient is drawn in."""
-    cx, cy, radius = (_number(value * scale) for value in gradient.geometry)
-    return f'<circle cx="{cx}" cy="{cy}" r="{radius}" fill="{fill}"/>'
 
 
 def _rounded(colour):

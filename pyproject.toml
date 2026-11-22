@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vectorize-lab"
+version = "0.2.0"
+description = "Converts PNG and JPG images of logos, icons and illustrations into editable SVG."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24", "Pillow>=10.0"]
+
+[project.optional-dependencies]
+# Rendering SVGs for the tests and the benchmark, and VTracer to compare against.
+dev = ["cairosvg>=2.7", "vtracer==1.0.0a4"]
+
+[project.scripts]
+vectorize = "vectorlab.cli:main"
+
+[project.urls]
+Source = "https://github.com/abby711/vectorize-lab"
+
+[tool.setuptools.packages.find]
+include = ["vectorlab*"]

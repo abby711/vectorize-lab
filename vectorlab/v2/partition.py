@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ..quantize import quantize_full_color, srgb_to_lab
+from ..quantize import quantize_full_color, squared_distances, srgb_to_lab
 
 _BIN_SHIFT = 3
 _BINS_PER_CHANNEL = 256 >> _BIN_SHIFT
@@ -68,9 +68,50 @@ def _row_runs(row):
 def label_partition(value_map, connectivity=4):
     """Connected components of equal value. Returns (component_map, component_value).
 
-    Two-pointer sweep over sorted runs, so cost stays linear in the
-    number of runs even on noisy rows.
+    Components are numbered in the order they're first met scanning rows,
+    the same as `_label_partition_sweep`, which this replaces for speed: runs
+    of equal value along each row are joined to the runs they touch in the
+    next row, all at once, then merged by repeatedly pointing each run at
+    the smallest run it connects to.
     """
+    if value_map.size == 0:
+        return np.zeros(value_map.shape, dtype=np.int32), np.zeros(0, dtype=value_map.dtype)
+    starts = np.ones(value_map.shape, dtype=bool)
+    starts[:, 1:] = value_map[:, 1:] != value_map[:, :-1]
+    run = (np.cumsum(starts.ravel()) - 1).reshape(value_map.shape)
+
+    pairs = [(run[:-1][value_map[:-1] == value_map[1:]], run[1:][value_map[:-1] == value_map[1:]])]
+    if connectivity == 8:
+        down_right = value_map[:-1, :-1] == value_map[1:, 1:]
+        down_left = value_map[:-1, 1:] == value_map[1:, :-1]
+        pairs.append((run[:-1, :-1][down_right], run[1:, 1:][down_right]))
+        pairs.append((run[:-1, 1:][down_left], run[1:, :-1][down_left]))
+    first = np.concatenate([a for a, _ in pairs])
+    second = np.concatenate([b for _, b in pairs])
+
+    root = np.arange(int(run[-1, -1]) + 1)
+    while True:
+        low, high = np.minimum(root[first], root[second]), np.maximum(root[first], root[second])
+        joined = low != high
+        if not joined.any():
+            break
+        np.minimum.at(root, high[joined], low[joined])
+        while True:
+            jumped = root[root]
+            if np.array_equal(jumped, root):
+                break
+            root = jumped
+
+    _, compact = np.unique(root, return_inverse=True)
+    component_map = compact.ravel().astype(np.int32)[run]
+    count = int(component_map.max()) + 1
+    component_value = np.zeros(count, dtype=value_map.dtype)
+    component_value[component_map.ravel()] = value_map.ravel()
+    return component_map, component_value
+
+
+def _label_partition_sweep(value_map, connectivity=4):
+    """Reference implementation: a two-pointer sweep over each row's runs."""
     height = value_map.shape[0]
     components = np.empty(value_map.shape, dtype=np.int32)
     union_find = _UnionFind()
@@ -208,6 +249,22 @@ def denoise_texture(rgb, raw_noise):
     return np.array(Image.fromarray(rgb).filter(ImageFilter.MedianFilter(size)))
 
 
+def unique_colours(rgb):
+    """(distinct colours (n, 3) uint8, index of each pixel's colour). Artwork has far fewer
+    colours than pixels, so per-colour work done once per colour is much cheaper."""
+    flat = rgb.reshape(-1, 3).astype(np.int32)
+    keys = (flat[:, 0] << 16) | (flat[:, 1] << 8) | flat[:, 2]
+    unique_keys, inverse = np.unique(keys, return_inverse=True)
+    colours = np.stack([(unique_keys >> 16) & 255, (unique_keys >> 8) & 255, unique_keys & 255], axis=1)
+    return colours.astype(np.uint8), inverse.ravel()
+
+
+def lab_image(rgb):
+    """The image in Lab, converting each distinct colour once."""
+    colours, inverse = unique_colours(rgb)
+    return srgb_to_lab(colours.astype(np.float64) / 255.0)[inverse].reshape(rgb.shape[:-1] + (3,))
+
+
 def estimate_noise(rgb):
     """Mean neighbour ΔE inside flat areas: 0 for clean artwork, ~0.5 for JPEG.
 
@@ -215,7 +272,7 @@ def estimate_noise(rgb):
     how close two colours may be and still count as different: 4 ΔE apart
     is two tints in a clean PNG, and just compression noise in a JPEG.
     """
-    lab = srgb_to_lab(rgb.reshape(-1, 3).astype(np.float64) / 255.0).reshape(rgb.shape)
+    lab = lab_image(rgb)
     centre = lab[1:-1, 1:-1]
     differences = np.stack(
         [
@@ -301,7 +358,8 @@ def _is_shoulder(lab, count, accepted_lab, accepted_count, merge_delta, distinct
 def _nearest_palette(rgb, palette):
     """Nearest palette entry in Lab. Returns (index map, ΔE map)."""
     height, width = rgb.shape[:2]
-    lab = srgb_to_lab(rgb.reshape(-1, 3).astype(np.float64) / 255.0)
+    colours, inverse = unique_colours(rgb)
+    lab = srgb_to_lab(colours.astype(np.float64) / 255.0)
     palette_lab = srgb_to_lab(palette.astype(np.float64) / 255.0)
 
     index = np.zeros(len(lab), dtype=np.int32)
@@ -312,7 +370,7 @@ def _nearest_palette(rgb, palette):
         index[start : start + 65536] = np.argmin(squared, axis=1)
         distance[start : start + 65536] = np.sqrt(np.min(squared, axis=1))
 
-    return index.reshape(height, width), distance.reshape(height, width)
+    return index[inverse].reshape(height, width), distance[inverse].reshape(height, width)
 
 
 def assign_labels(rgb, palette, pure_delta, blend_residual, report=False, reach=1):
@@ -377,7 +435,7 @@ def refine_palette(rgb, palette, labels, blends, options, pure_delta, rounds=2, 
     explained by its colour, directly or as a blend of its neighbours;
     where clusters of pixels aren't, the palette is missing a colour.
     """
-    lab = srgb_to_lab(rgb.reshape(-1, 3).astype(np.float64) / 255.0).reshape(rgb.shape)
+    lab = lab_image(rgb)
     for _ in range(rounds):
         palette_lab = srgb_to_lab(palette.astype(np.float64) / 255.0)
         error = np.linalg.norm(lab - palette_lab[labels], axis=-1)
@@ -666,7 +724,7 @@ def _adaptive_palette(rgb, options):
     count = options.fallback_colors
     while count < options.max_fallback_colors:
         centres = _short_kmeans(sample, count)
-        nearest = np.sqrt(((sample[:, None, :] - centres[None, :, :]) ** 2).sum(axis=2).min(axis=1))
+        nearest = np.sqrt(squared_distances(sample, centres).min(axis=1))
         if float(nearest.mean()) <= options.target_delta:
             break
         count = min(options.max_fallback_colors, int(count * 1.6))
@@ -678,11 +736,11 @@ def _short_kmeans(points, count, iterations=8, seed=3):
     rng = np.random.default_rng(seed)
     centres = points[rng.choice(len(points), count, replace=False)]
     for _ in range(iterations):
-        nearest = np.argmin(((points[:, None, :] - centres[None, :, :]) ** 2).sum(axis=2), axis=1)
-        for index in range(count):
-            members = points[nearest == index]
-            if len(members):
-                centres[index] = members.mean(axis=0)
+        nearest = np.argmin(squared_distances(points, centres), axis=1)
+        sizes = np.bincount(nearest, minlength=count)
+        occupied = sizes > 0
+        sums = np.stack([np.bincount(nearest, weights=points[:, c], minlength=count) for c in range(3)], axis=1)
+        centres[occupied] = sums[occupied] / sizes[occupied][:, None]
     return centres
 
 
@@ -780,17 +838,21 @@ def force_clear(labelling, alpha, key, solid=0.98):
     return int(remap[index])
 
 
-def partition_labels(labelling, options, area_scale=1.0):
-    """Merge undersized regions and index the result: the cheap half, repeatable."""
+def partition_labels(labelling, options, area_scale=1.0, start=None):
+    """Merge undersized regions and index the result: the cheap half, repeatable.
+
+    start: a label map already merged at a smaller scale, to carry on from
+    rather than merge every region again from the beginning.
+    """
     # In clean artwork a seven-pixel region is a star or a dot someone drew;
     # in a JPEG it is a speckle. The merge size follows the measured noise.
     blend = min(labelling.noise / 0.5, 1.0)
     min_area = round(options.min_region_area + blend * (options.noisy_region_area - options.min_region_area))
     palette, mode = labelling.palette, labelling.mode
     if labelling.image_lab is None:
-        labelling.image_lab = srgb_to_lab(labelling.image.astype(np.float64) / 255.0)
+        labelling.image_lab = lab_image(labelling.image)
     label_map = merge_small_regions(
-        labelling.label_map,
+        labelling.label_map if start is None else start,
         max(1, round(min_area * area_scale)),
         image_lab=labelling.image_lab,
         palette_lab=srgb_to_lab(palette.astype(np.float64) / 255.0),

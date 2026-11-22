@@ -77,6 +77,7 @@ ENGINES = {
     "v2-no-occlusion": _v2_variant(use_occlusion=False),
     "v2-no-blend-labels": _v2_variant(use_blend_labels=False),
     "v2-no-gradients": _v2_variant(use_gradients=False),
+    "v2-no-strokes": _v2_variant(use_strokes=False),
     # tolerance sweep
     "v2-tol-0.4": _v2_variant(tolerance=0.4),
     "v2-tol-0.8": _v2_variant(tolerance=0.8),

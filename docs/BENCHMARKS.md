@@ -36,7 +36,7 @@ icons.
 
 | Engine | Anchors vs original | Colour error | Worst agreement |
 |---|---|---|---|
-| v2 | 1.21× | 0.10 | 99.9% |
+| v2 | 1.20× | 0.10 | 99.9% |
 | VTracer `--simplify 2` | 1.26× | 1.49 | 98.5% |
 | VTracer default | 4.10× | 1.15 | 99.1% |
 | v1 | 3.77× | 2.42 | 98.4% |
@@ -47,7 +47,7 @@ are across a range of settings. Lower-left is better.
 ![Anchor points against colour error](images/pareto.png)
 
 At the same point count (1.13×, v2 at tolerance 1.0 and VTracer at
-`--simplify 3`), the colour error is 0.16 for v2 and 1.71 for VTracer.
+`--simplify 3`), the colour error is 0.13 for v2 and 1.71 for VTracer.
 
 Source pixels, v2 and VTracer, zoomed in:
 
@@ -67,7 +67,7 @@ fixtures above rendered at 160 px and 1440 px. They come from
 
 | Engine | Anchors vs original | Colour error | Worst agreement |
 |---|---|---|---|
-| v2 | 1.22× | 0.65 | 99.4% |
+| v2 | 1.13× | 0.65 | 99.4% |
 | VTracer `--simplify 2` | 1.39× | 2.20 | 97.1% |
 
 ![Details](images/complex-detail.png)
@@ -78,7 +78,50 @@ bulging ends: the bars are 7.7 px wide with a 2 px corner radius, and the
 fitted curve stays within the 0.6 px tolerance but is visible when zoomed
 in. `--tolerance 0.3` fixes it at the cost of more points.
 
-A seventh scene, a sunset with gradients, is covered in the next section.
+The line art is covered in more detail under Strokes, and a seventh
+scene, a sunset with gradients, under Gradients.
+
+## Strokes
+
+The line art is a house, a sun, a plant and the ground, all drawn as
+3.5 px strokes with round caps and joins.
+
+![Line art, zoomed in on the plant](images/strokes.png)
+
+| Engine | Anchors vs original | Colour error | Agreement |
+|---|---|---|---|
+| v2 | 1.24× | 0.33 | 99.6% |
+| v2 without strokes | 1.93× | 0.36 | 99.6% |
+| VTracer `--simplify 2` | 2.72× | 3.37 | 98.0% |
+| VTracer default | 7.79× | 2.79 | 98.3% |
+
+Traced as filled shapes, every line is two outlines that have to be
+edited together. v2 now writes each one as a single centreline with a
+`stroke-width`: the ground is one line from end to end, the sun a
+stroked circle and the window a stroked rectangle.
+
+A shape becomes a stroke when a disc of one fixed width, swept along a
+centreline, reproduces it. The centreline comes from thinning the
+shape's mask to a skeleton. Each skeleton point is then moved to halfway
+between the two sides of the sub-pixel outline, which also measures the
+width there. Where lines meet, the ends are moved to where the lines
+would intersect, and lines that carry straight on through a junction are
+joined into one. Free ends get a round or a butt cap, whichever matches
+the shape better. The shape stays filled if fewer than 80% of the
+measured widths are close to the median, or if the redrawn stroke and
+the shape disagree on more than 0.6 px (or a quarter of the width, if
+that's less) per pixel of length.
+
+Strokes are painted after all the filled shapes, as outlines are drawn
+over their fills, so the shapes they touch can extend underneath them. The inside
+of the house, the window and the sun is the background showing through,
+so those shapes aren't written at all.
+
+The plant is the hardest part: both leaves start where the stem is, so
+three strokes overlap there, and the joins come out slightly kinked.
+Random scenes with four separate lines each
+(`test_strokes_become_strokes`) come back with three or four of them as
+strokes.
 
 ## Gradients
 
@@ -162,24 +205,72 @@ in the repo because their licences are unknown.
 
 | Image | v2 points | v2 error | VTracer points | VTracer error |
 |---|---|---|---|---|
-| Clip-art mushroom | 1,044 | 3.51 | 2,944 | 7.61 |
-| Vector flower | 2,525 | 2.01 | 5,860 | 3.71 |
-| Cartoon mascot | 5,869 | 4.04 | 11,191 | 4.98 |
-| Isometric city infographic | 11,893 | 3.56 | 22,921 | 6.42 |
-| Low-poly fox | 17,705 | 7.39 | 23,730 | 12.15 |
-| Neon gradient blobs | 11,633 | 12.88 | 21,183 | 16.12 |
-| Graffiti alphabet | 46,445 | 11.66 | 140,143 | 10.76 |
-| Botanical engraving | 21,635 | 21.06 | 192,430 | 18.58 |
-| Stained-glass peacock | 41,753 | 16.20 | 144,932 | 13.44 |
+| Clip-art mushroom | 990 | 3.57 | 2,944 | 7.61 |
+| Vector flower | 2,479 | 2.01 | 5,860 | 3.71 |
+| Cartoon mascot | 5,617 | 3.94 | 11,191 | 4.98 |
+| Isometric city infographic | 11,500 | 3.58 | 22,921 | 6.42 |
+| Low-poly fox | 18,039 | 7.42 | 23,730 | 12.15 |
+| Neon gradient blobs | 11,556 | 12.90 | 21,183 | 16.12 |
+| Graffiti alphabet | 25,783 | 12.62 | 140,143 | 10.76 |
+| Botanical engraving | 21,744 | 21.14 | 192,430 | 18.58 |
+| Stained-glass peacock | 30,768 | 16.89 | 144,932 | 13.44 |
 
 v2 is ahead on both counts for the first six. On the last three, which
-are mostly texture, VTracer is more accurate. Part of the gap comes from
-v2's 6,000-region limit, which the graffiti and the peacock both hit.
+are mostly texture, VTracer is more accurate. The graffiti and the
+peacock are traced in texture mode (see Speed below): v2 notices they're
+detail everywhere rather than flat shapes and traces them more loosely,
+trading some accuracy for fewer points in less than half the time.
 
 Gradient fills brought every image down a little, by 0–11% in points
 and 0–10% in error. The neon blobs gained the least for an image made of
 gradients: they overlap and blend into each other, so few groups of
 bands fit a single linear or radial gradient.
+
+Strokes then took off another 0.5–5% of the points. They mostly
+replace short marks and outline pieces, and the colour error moved by
+0.06 or less either way. The mushroom's error went up by 0.06: its
+little brush marks taper, and a stroke has one width.
+
+## Speed
+
+Times for one image on a 4-core Linux machine, with the command-line
+tool's default of one worker process per core:
+
+| Image | Before | Now |
+|---|---|---|
+| UI card (480 px) | 0.46 s | 0.2 s |
+| Clip-art mushroom | 1.7 s | 1.2 s |
+| Vector flower | 12.4 s | 5.9 s |
+| Cartoon mascot | 12.5 s | 5.3 s |
+| Isometric city infographic | 21.3 s | 9.7 s |
+| Neon gradient blobs | 27.6 s | 7.8 s |
+| Low-poly fox | 46.3 s | 14.4 s |
+| Botanical engraving | 37.9 s | 13.7 s |
+| Graffiti alphabet | 95.7 s | 12.6 s |
+| Stained-glass peacock | 88.9 s | 13.5 s |
+
+About half of the gain comes from doing less work, and half from using
+more cores. Colours are converted and matched once per distinct colour rather than
+once per pixel, region labelling runs as whole-array operations, a group
+of bands that can't be a gradient is ruled out from a small sample, and
+coverage is computed for edge pixels only. The rest is parallel: curve
+fitting runs its batches on threads, and shapes, strokes, outlines and
+gradient groups are traced in worker processes. The output is exactly
+the same with one worker, which is the default when the engine is called
+from Python.
+
+The graffiti and the peacock also go through texture mode. When the
+pixels inside regions are noisy (a mean neighbour difference of 1.5 ΔE
+or more) and at least 30% of the image is in regions under 200 pixels,
+v2 skips the gradient and line searches, lets curves stray up to 1 px
+instead of 0.6, and adds a note to the result saying so. Without it
+they take 30 s. `texture_safeguard=False` turns it off.
+
+When an image needs simplifying to fit the region budget, each coarser
+pass now carries on from the previous one's merges instead of starting
+again.
+
+VTracer is still far faster: 0.1–5 s for every image above.
 
 ## What each part contributes
 
@@ -187,16 +278,19 @@ Each row turns one part of v2 off and reruns the designer fixtures.
 
 | Turned off | Anchors vs original | Colour error |
 |---|---|---|
-| nothing | 1.21× | 0.12 |
-| reading antialiasing (sub-pixel edges) | 2.34× | 0.12 |
-| layering shapes, holes filled | 1.92× | 0.19 |
-| blend-aware colour labels | 1.45× | 0.12 |
-| extending shapes under the ones on top | 1.29× | 0.14 |
-| optimal curve fitting (greedy instead) | 1.23× | 0.14 |
-| circle/ellipse/rect primitives | 1.18× | 0.14 |
+| nothing | 1.20× | 0.10 |
+| reading antialiasing (sub-pixel edges) | 1.97× | 0.12 |
+| layering shapes, holes filled | 1.89× | 0.19 |
+| blend-aware colour labels | 1.51× | 0.10 |
+| extending shapes under the ones on top | 1.27× | 0.14 |
+| optimal curve fitting (greedy instead) | 1.26× | 0.12 |
+| circle/ellipse/rect primitives | 1.17× | 0.12 |
+| strokes | 1.21× | 0.10 |
 
 Sub-pixel edges and layering account for most of the improvement. The
-optimal fitting only saves about 2% over a greedy fit. Primitives slightly
+optimal fitting saves about 5% over a greedy fit. These fixtures have no
+gradients, and only one stroke (a pill-shaped bar in the badge); the
+line art and sunset sections show what those two do. Primitives slightly
 increase the count, since a circle counts as 4 points and the fitter can
 draw one with 3 curves; they're kept because a circle that stays a circle
 is easier to edit.
@@ -213,7 +307,8 @@ python3 compare.py --gt-only          # v1, v2 and VTracer on every fixture with
 
 Other engines can be passed with `--engines`, for example
 `v2,v2-no-coverage,v2-greedy-fit` for the ablation,
-`v2,v2-no-gradients --only 23-` for the gradient comparison, or
+`v2,v2-no-gradients --only 23-` for the gradient comparison,
+`v2,v2-no-strokes --only 24-` for the strokes, or
 `v2-tol-0.4,v2,v2-tol-1.0,vtracer-simplify-1,vtracer-simplify-3` for the
 tolerance sweep. Results go to `compare-out/COMPARISON.md`.
 
