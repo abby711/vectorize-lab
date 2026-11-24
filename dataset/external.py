@@ -34,7 +34,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-from vectorlab.metrics import analyse_svg  # noqa: E402
+from vectorlab.core.metrics import analyse_svg  # noqa: E402
 
 LONGEST_EDGE = 1024
 MAX_BYTES = 8 * 1024 * 1024

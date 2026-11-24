@@ -3,7 +3,7 @@
 
 import sys
 
-from vectorlab.cli import main
+from vectorlab.trace.cli import main
 
 if __name__ == "__main__":
     sys.exit(main())

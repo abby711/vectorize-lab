@@ -1,4 +1,6 @@
-"""Orchestrates the full raster -> SVG pipeline.
+"""The first version of the tracer, kept for comparison.
+
+Orchestrates the full raster -> SVG pipeline.
 
     decode -> quantize -> label regions -> extract rings
            -> simplify -> fit curves -> emit SVG
@@ -10,8 +12,9 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image, ImageFilter
 
-from . import curves, regions, simplify, svg
-from .quantize import quantize_full_color, quantize_grayscale, quantize_monochrome
+from ..core.colour import quantize_full_color, quantize_grayscale, quantize_monochrome
+from ..core.result import VectorizeRejected, VectorizeResult
+from . import curves, polyline, regions, svg
 
 MODE_FULL_COLOR = "full_color"
 MODE_GRAYSCALE = "grayscale"
@@ -35,30 +38,6 @@ class VectorizeOptions:
     max_regions: int = 4000
     fit_curves: bool = True
     drop_largest_region: bool = False
-
-
-class VectorizeRejected(Exception):
-    """Raised when the input is beyond what region tracing can represent.
-
-    Failing loudly beats grinding for minutes and emitting a 20 MB file
-    of noise: the caller can then fall back, or tell the user plainly.
-    """
-
-    def __init__(self, reason, region_count=0):
-        super().__init__(reason)
-        self.reason = reason
-        self.region_count = region_count
-
-
-@dataclass
-class VectorizeResult:
-    svg: str
-    width: int
-    height: int
-    shape_count: int
-    path_segment_count: int
-    palette: list
-    notes: tuple = ()
 
 
 def _load_rgba(path_or_file, max_dimension, upscale, presmooth=0):
@@ -160,7 +139,7 @@ def vectorize_image(path_or_file, options=None):
         rings_segments = []
         segment_count = 0
         for ring in rings:
-            reduced = simplify.simplify_ring(ring, options.simplify_epsilon)
+            reduced = polyline.simplify_ring(ring, options.simplify_epsilon)
             if len(reduced) < 3:
                 continue
             if options.fit_curves:

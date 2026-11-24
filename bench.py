@@ -18,7 +18,7 @@ import time
 from PIL import Image, ImageDraw
 
 from vectorlab import VectorizeOptions, VectorizeRejected, vectorize_image
-from vectorlab.pipeline import MODE_FULL_COLOR, MODE_GRAYSCALE, MODE_MONOCHROME
+from vectorlab.v1 import MODE_FULL_COLOR, MODE_GRAYSCALE, MODE_MONOCHROME
 from verify import score
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp")

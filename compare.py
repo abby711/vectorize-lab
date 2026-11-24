@@ -19,7 +19,7 @@ import math
 import os
 import time
 
-from vectorlab.metrics import count_editable_points
+from vectorlab.core.metrics import count_editable_points
 from verify import score
 
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
@@ -34,7 +34,7 @@ def _engine_v1(image_path, svg_path):
 
 
 def _engine_v2(image_path, svg_path):
-    from vectorlab.v2 import vectorize_v2
+    from vectorlab.trace import vectorize_v2
 
     result = vectorize_v2(image_path)
     with open(svg_path, "w", encoding="utf-8") as handle:
@@ -55,7 +55,7 @@ def _engine_vtracer_simplify(image_path, svg_path):
 
 def _v2_variant(**changes):
     def engine(image_path, svg_path):
-        from vectorlab.v2 import V2Options, vectorize_v2
+        from vectorlab.trace import V2Options, vectorize_v2
 
         result = vectorize_v2(image_path, V2Options(**changes))
         with open(svg_path, "w", encoding="utf-8") as handle:

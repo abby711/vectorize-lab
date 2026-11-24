@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..quantize import srgb_to_lab
+from ..core.colour import srgb_to_lab
 from .partition import Partition, _component_boxes
 
 _SOFT_STEP = 8.0  # ΔE: largest mean pixel step across a soft boundary

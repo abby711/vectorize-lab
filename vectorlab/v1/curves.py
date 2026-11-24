@@ -8,7 +8,7 @@ Bezier control points.
 
 import numpy as np
 
-from .simplify import turn_angles
+from .polyline import turn_angles
 
 
 def _hermite_to_bezier(point_a, point_b, tangent_a, tangent_b):

@@ -20,12 +20,12 @@ sys.path.insert(0, ROOT)
 import cairosvg  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from vectorlab.metrics import count_editable_points  # noqa: E402
-from vectorlab.pipeline import VectorizeRejected  # noqa: E402
-from vectorlab.v2 import V2Options, vectorize_v2  # noqa: E402
-from vectorlab.v2.contour import coverage_field, trace_loops  # noqa: E402
-from vectorlab.v2.partition import build_partition  # noqa: E402
-from vectorlab.v2.primitives import detect_primitive  # noqa: E402
+from vectorlab.core.metrics import count_editable_points  # noqa: E402
+from vectorlab.v1 import VectorizeRejected  # noqa: E402
+from vectorlab.trace import V2Options, vectorize_v2  # noqa: E402
+from vectorlab.core.contour import coverage_field, trace_loops  # noqa: E402
+from vectorlab.trace.partition import build_partition  # noqa: E402
+from vectorlab.core.primitives import detect_primitive  # noqa: E402
 
 SEEDS = range(12)
 WIDTH, HEIGHT = 240, 180
@@ -163,7 +163,7 @@ def test_partition_never_drops_pixels():
     for seed in SEEDS:
         source = _rasterise(random_scene(seed), "white").astype(np.uint8)
         options = V2Options()
-        from vectorlab.v2 import _PartitionView
+        from vectorlab.trace import _PartitionView
 
         partition = build_partition(source, _PartitionView(options, options.blend_residual))
         assert partition.component_map.min() >= 0
@@ -382,6 +382,24 @@ def test_texture_traced_loosely_with_a_note():
     for seed in SEEDS[:4]:
         _, flat = _trace(seed)
         assert not any("textured" in note for note in flat.notes), f"seed {seed}: {flat.notes}"
+
+
+TOOLS = ["vectorlab.trace"]  # each tool must load on its own: only itself and the shared core
+
+
+def test_tools_load_on_their_own():
+    """Importing one tool doesn't pull in another tool or the first version."""
+    import subprocess
+
+    for tool in TOOLS:
+        script = (
+            f"import sys; sys.path.insert(0, {ROOT!r}); import {tool}; "
+            "print(' '.join(m for m in sys.modules if m.startswith('vectorlab')))"
+        )
+        loaded = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True).stdout.split()
+        allowed = ("vectorlab", "vectorlab.core", tool)
+        strays = [m for m in loaded if not any(m == a or m.startswith(a + ".") for a in allowed)]
+        assert not strays, f"{tool} also loads {strays}"
 
 
 JPEG_GUARD = 5.0  # today's level; the target is 2.0 — see docs/APPROACH.md, known gaps

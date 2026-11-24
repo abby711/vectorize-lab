@@ -8,7 +8,7 @@
 import argparse
 import sys
 
-from .pipeline import MODE_FULL_COLOR, MODE_GRAYSCALE, MODE_MONOCHROME, VectorizeOptions, VectorizeRejected, vectorize_image
+from ..core.result import VectorizeRejected
 
 
 def build_parser():
@@ -29,8 +29,8 @@ def build_parser():
     v1 = parser.add_argument_group("v1")
     v1.add_argument(
         "--mode",
-        default=MODE_FULL_COLOR,
-        choices=[MODE_FULL_COLOR, MODE_GRAYSCALE, MODE_MONOCHROME],
+        default="full_color",
+        choices=["full_color", "grayscale", "monochrome"],
         help="colour mode",
     )
     v1.add_argument("--colors", type=int, default=8, help="palette size for full_color")
@@ -50,6 +50,9 @@ def build_parser():
 
 
 def _run_v1(args):
+    # The first version is only loaded when asked for.
+    from ..v1 import VectorizeOptions, vectorize_image
+
     options = VectorizeOptions(
         mode=args.mode,
         color_count=args.colors,
@@ -70,7 +73,7 @@ def _run_v1(args):
 
 
 def _run_v2(args):
-    from .v2 import V2Options, vectorize_v2
+    from . import V2Options, vectorize_v2
 
     options = V2Options(
         tolerance=args.tolerance,

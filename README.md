@@ -57,14 +57,14 @@ From a checkout, `pip install .` does the same, or run
 From Python:
 
 ```python
-from vectorlab import vectorize, Options
+from vectorlab.trace import trace, TraceOptions
 
-result = vectorize("input.png", Options(tolerance=0.8))
+result = trace("input.png", TraceOptions(tolerance=0.8))
 open("output.svg", "w").write(result.svg)
 print(result.notes)   # e.g. when a detailed image had to be simplified
 ```
 
-`Options(workers=0)` uses one process per core, as the command does.
+`TraceOptions(workers=0)` uses one process per core, as the command does.
 The script calling it then needs its top-level code under
 `if __name__ == "__main__":`.
 
@@ -117,6 +117,20 @@ The full tables, the method and the ablation results are in
 - Photographs aren't a good fit.
 
 ## Development
+
+The code is one package with a shared engine and a module per tool. Each
+tool loads on its own, with only the engine, and has its own entry point:
+
+| Tool | Python | Command |
+|---|---|---|
+| Trace: image to SVG | `from vectorlab.trace import trace, TraceOptions` | `vectorize` |
+
+```
+vectorlab/
+  core/     shared engine: curve fitting, shapes, outlines, colour, SVG output
+  trace/    the tracer
+  v1/       the first version, kept for comparison
+```
 
 ```bash
 pip install -e ".[dev]"          # adds cairosvg and VTracer, for the tests and the benchmark

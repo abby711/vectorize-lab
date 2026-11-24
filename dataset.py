@@ -19,7 +19,7 @@ import os
 
 import re
 
-from vectorlab.metrics import count_editable_points
+from vectorlab.core.metrics import count_editable_points
 
 IMAGE_WIDTH = 480
 

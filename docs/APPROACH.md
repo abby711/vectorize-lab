@@ -6,8 +6,9 @@ numbers quoted here come from [BENCHMARKS.md](BENCHMARKS.md), which
 traces SVGs whose original drawing is known and compares the result with
 that drawing.
 
-The engine is `vectorlab/v2/`. `vectorlab/pipeline.py` is the first
-version, kept for comparison.
+The tracer is `vectorlab/trace/`, built on the shared engine in
+`vectorlab/core/`. `vectorlab/v1/` is the first version, kept for
+comparison.
 
 ## Compared with VTracer
 

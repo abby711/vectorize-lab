@@ -1,4 +1,10 @@
-"""vectorlab v2 — sub-pixel, globally fitted, primitive-aware tracing.
+"""Trace: a raster image (PNG, JPG, WebP) to an editable SVG.
+
+    from vectorlab.trace import trace, TraceOptions
+    result = trace("logo.png", TraceOptions(tolerance=0.8))
+
+Command: `vectorize in.png -o out.svg`. Only the shared engine in
+vectorlab.core is loaded with it.
 
     decode (transparency composited over a key colour)
            → detect palette → blend-aware labels → partition (merge, never drop)
@@ -8,7 +14,7 @@
            → coverage field → marching squares → primitive or optimal spline
            → SVG, leaving out the key colour's regions
 
-Every idea is a switch on V2Options so each one's contribution can be
+Every idea is a switch on TraceOptions so each one's contribution can be
 measured on its own.
 """
 
@@ -17,11 +23,11 @@ from dataclasses import dataclass, field, replace
 import numpy as np
 from PIL import Image, ImageDraw
 
-from ..metrics import count_editable_points
-from ..pipeline import VectorizeRejected, VectorizeResult
-from ..quantize import srgb_to_lab
-from .contour import coverage_field, signed_area, trace_loops
-from .emit import (
+from ..core.metrics import count_editable_points
+from ..core.result import VectorizeRejected, VectorizeResult
+from ..core.colour import srgb_to_lab
+from ..core.contour import coverage_field, signed_area, trace_loops
+from ..core.svg import (
     build_document,
     gradient_element,
     open_path_data,
@@ -30,18 +36,19 @@ from .emit import (
     stroke_attributes,
     to_hex,
 )
-from .fitting import FitSettings, fit_loops, fit_open
+from ..core.fitting import FitSettings, fit_loops, fit_open
 from .gradients import merge_gradients
-from .parallel import Workers, worker_count
-from .strokes import Stroke, could_be_stroke, detect_stroke
-from .partition import force_clear, label_image, label_partition, partition_labels
-from .primitives import detect_primitive
+from ..core.parallel import Workers, worker_count
+from ..core.centrelines import Stroke, could_be_stroke, detect_stroke
+from ..core.regions import label_partition
+from .partition import force_clear, label_image, partition_labels
+from ..core.primitives import detect_primitive
 
 _MARGIN = 2
 
 
 @dataclass
-class V2Options:
+class TraceOptions:
     # palette and partition
     max_colors: int = 32
     min_palette_fraction: float = 0.0004
@@ -606,8 +613,8 @@ def _partition_within_budget(labelling, view, options):
     )
 
 
-def vectorize_v2(path_or_file, options=None):
-    options = options or V2Options()
+def trace(path_or_file, options=None):
+    options = options or TraceOptions()
     source = _load(path_or_file, options.max_dimension)
     height, width = source.rgb.shape[:2]
     scale = source.scale
@@ -657,7 +664,7 @@ def vectorize_v2(path_or_file, options=None):
 
 
 class _PartitionView:
-    """Adapts V2Options to the field names build_partition reads."""
+    """Adapts TraceOptions to the field names build_partition reads."""
 
     def __init__(self, options, blend_residual):
         self.max_colors = options.max_colors
@@ -676,4 +683,8 @@ class _PartitionView:
         self.min_missing_colour = options.min_missing_colour
 
 
-__all__ = ["V2Options", "vectorize_v2"]
+# Earlier names, kept so existing code keeps working.
+V2Options = TraceOptions
+vectorize_v2 = trace
+
+__all__ = ["TraceOptions", "trace", "V2Options", "vectorize_v2"]

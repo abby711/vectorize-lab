@@ -16,7 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from vectorlab import VectorizeOptions, VectorizeRejected, vectorize_image
-from vectorlab.pipeline import MODE_FULL_COLOR
+from vectorlab.v1 import MODE_FULL_COLOR
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 
@@ -35,7 +35,7 @@ def _trace(payload, query):
     if query.get("engine", ["v2"])[0] == "v1":
         return vectorize_image(io.BytesIO(payload), _options_from_query(query))
 
-    from vectorlab.v2 import V2Options, vectorize_v2
+    from vectorlab.trace import V2Options, vectorize_v2
 
     options = V2Options(
         tolerance=_number(query, "tolerance", 0.6, float),

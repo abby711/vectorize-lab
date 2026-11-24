@@ -1,28 +1,37 @@
-"""vectorlab: raster images (PNG, JPG) to editable SVG.
+"""vectorlab: tools for editable vector graphics, on one shared engine.
 
-    from vectorlab import vectorize
-    result = vectorize("logo.png")
-    open("logo.svg", "w").write(result.svg)
+Each tool is its own module, with its own entry point, and loads only
+what it needs:
 
-`vectorize` is the current engine (vectorlab.v2); `vectorize_image` is the
-first version, kept for comparison. Only numpy and Pillow are needed.
+    from vectorlab.trace import trace        # raster image -> SVG       command: vectorize
+
+`vectorlab.core` is the shared engine and `vectorlab.v1` the first
+version of the tracer, kept for comparison. The names below are also
+available from here, loaded on first use.
 """
 
-from .pipeline import VectorizeOptions, VectorizeRejected, VectorizeResult, vectorize_image
-from .v2 import V2Options, vectorize_v2
-
-vectorize = vectorize_v2
-Options = V2Options
+import importlib
 
 __version__ = "0.2.0"
 
-__all__ = [
-    "Options",
-    "V2Options",
-    "VectorizeOptions",
-    "VectorizeRejected",
-    "VectorizeResult",
-    "vectorize",
-    "vectorize_image",
-    "vectorize_v2",
-]
+_EXPORTS = {
+    "trace": ("vectorlab.trace", "trace"),
+    "TraceOptions": ("vectorlab.trace", "TraceOptions"),
+    "vectorize": ("vectorlab.trace", "trace"),
+    "Options": ("vectorlab.trace", "TraceOptions"),
+    "V2Options": ("vectorlab.trace", "TraceOptions"),
+    "vectorize_v2": ("vectorlab.trace", "trace"),
+    "VectorizeResult": ("vectorlab.core.result", "VectorizeResult"),
+    "VectorizeRejected": ("vectorlab.core.result", "VectorizeRejected"),
+    "VectorizeOptions": ("vectorlab.v1", "VectorizeOptions"),
+    "vectorize_image": ("vectorlab.v1", "vectorize_image"),
+}
+
+__all__ = sorted(_EXPORTS)
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module 'vectorlab' has no attribute {name!r}")
+    module, attribute = _EXPORTS[name]
+    return getattr(importlib.import_module(module), attribute)

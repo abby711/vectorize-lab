@@ -13,7 +13,7 @@ with the original in two ways:
 - Anchor points: the number of on-curve points in the output, divided by
   the number in the original. 1.0× means the same count as the original
   drawing. Circles, ellipses and rects count as 4 points; shapes reused
-  with `<use>` are counted each time they're drawn. See `vectorlab/metrics.py`.
+  with `<use>` are counted each time they're drawn. See `vectorlab/core/metrics.py`.
 - Colour error: the output is rendered with cairosvg and compared pixel by
   pixel with the input. This is the mean absolute difference per channel,
   on a 0–255 scale.
